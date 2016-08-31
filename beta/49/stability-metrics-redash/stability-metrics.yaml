@@ -1,0 +1,429 @@
+queries:
+- api_key: 026f8f271bb9178a90bbf2657d725d887a868f02
+  data_source: Presto
+  description: null
+  id: 939
+  name: E10s add-ons stability comparison by activity date (Beta 49)
+  query: |-
+    WITH channel_data AS (
+      /* Restrict to population and dates of interest */
+      SELECT *
+      FROM crash_aggregates
+      WHERE
+      -- Dates start from the release of Beta 49
+      submission_date >= '2016-08-03'
+      AND activity_date >= '2016-08-03'
+      -- Fx Beta 49
+      AND dimensions['application'] = 'Firefox'
+      AND dimensions['channel'] = 'beta'
+      AND dimensions['build_version'] like '49.%'
+      -- No active experiment
+      AND dimensions['experiment_id'] IS NULL
+      -- Test/control groups for the add-ons experiment
+      AND dimensions['e10s_cohort'] IN ('addons-set2a-test', 'addons-set2a-control', 'test', 'control')
+    ),
+    crash_counts AS (
+      /* Total crashes and usage time by date and cohort */
+      SELECT
+      activity_date,
+      dimensions['e10s_cohort'] AS e10s_cohort,
+      -- Usage hours (in 1000s)
+      SUM(stats['usage_hours']) / 1000 AS usage_khours,
+      -- Total crashes for each type
+      SUM(stats['main_crashes']) AS main_crashes,
+      SUM(stats['content_crashes']) AS content_crashes,
+      SUM(stats['content_shutdown_crashes']) AS content_shutdown_crashes,
+      SUM(stats['plugin_crashes']) AS npapi_plugin_crashes,
+      SUM(stats['gmplugin_crashes']) AS media_plugin_crashes
+      FROM channel_data
+      GROUP BY 1, 2
+    ),
+    counts_over_time AS (
+      /* Base crash count dataset, excluding uninformative rows */
+      SELECT *
+      FROM crash_counts
+      WHERE usage_khours > 1
+    )
+    /* Compute crash rates for each crash type as well as combined */
+    SELECT
+    activity_date,
+    e10s_cohort,
+    main_crashes / usage_khours AS main_crash_rate,
+    (content_crashes - content_shutdown_crashes) / usage_khours AS content_crash_rate_noshutdown,
+    content_shutdown_crashes / usage_khours AS content_shutdown_crash_rate,
+    npapi_plugin_crashes / usage_khours AS npapi_plugin_crash_rate,
+    media_plugin_crashes / usage_khours AS media_plugin_crash_rate,
+    (main_crashes + content_crashes - content_shutdown_crashes) / usage_khours AS combined_app_crash_rate,
+    (npapi_plugin_crashes + media_plugin_crashes) / usage_khours AS combined_plugin_crash_rate
+    FROM counts_over_time
+    -- Drop the most recent day as data may be incomplete
+    WHERE CAST(activity_date AS date) < current_date - interval '2' day
+    ORDER BY activity_date, e10s_cohort ASC
+  schedule: '86400'
+  visualizations:
+  - description: ''
+    id: 1677
+    name: Main crash rate
+    options:
+      columnMapping: {activity_date: x, combined_app_crash_rate: unused, content_crash_rate_noshutdown: unused,
+        e10s_cohort: series, main_crash_rate: y}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: normal}
+      seriesOptions:
+        addons-set2a-control: {index: 0, name: Non-e10s (add-ons), type: line, yAxis: 0,
+          zIndex: 0}
+        addons-set2a-test: {index: 0, name: E10s (add-ons), type: line, yAxis: 0,
+          zIndex: 1}
+        control: {index: 0, name: Non-e10s (no add-ons), type: line, yAxis: 0, zIndex: 2}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 3}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 1676
+    name: Combined plugin crash rate
+    options:
+      columnMapping: {activity_date: x, combined_app_crash_rate: unused, combined_plugin_crash_rate: y,
+        e10s_cohort: series}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        addons-set2a-control: {index: 0, name: Non-e10s (add-ons), type: line, yAxis: 0,
+          zIndex: 0}
+        addons-set2a-test: {index: 0, name: E10s (add-ons), type: line, yAxis: 0,
+          zIndex: 1}
+        control: {index: 0, name: Non-e10s (no add-ons), type: line, yAxis: 0, zIndex: 2}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 3}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 1675
+    name: Combined app crash rate (main/content)
+    options:
+      columnMapping: {activity_date: x, combined_app_crash_rate: y, e10s_cohort: series}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        addons-set2a-control: {index: 0, name: Non-e10s (add-ons), type: line, yAxis: 0,
+          zIndex: 0}
+        addons-set2a-test: {index: 0, name: E10s (add-ons), type: line, yAxis: 0,
+          zIndex: 1}
+        control: {index: 0, name: Non-e10s (no add-ons), type: line, yAxis: 0, zIndex: 2}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 3}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+- api_key: cd336de5127ef0c53caa757341b31c8646b00371
+  data_source: Presto
+  description: null
+  id: 941
+  name: E10s add-ons stability comparison by build (Beta 49)
+  query: |-
+    WITH channel_data AS (
+      /* Restrict to population and dates of interest */
+      SELECT *
+      FROM crash_aggregates
+      WHERE
+      -- Dates start from the release of Beta 49
+      submission_date >= '2016-08-03'
+      AND activity_date >= '2016-08-03'
+      -- Fx Beta 49
+      AND dimensions['application'] = 'Firefox'
+      AND dimensions['channel'] = 'beta'
+      AND dimensions['build_version'] like '49.%'
+      -- No active experiment
+      AND dimensions['experiment_id'] IS NULL
+      -- Test/control groups for the add-ons experiment
+      AND dimensions['e10s_cohort'] IN ('addons-set2a-test', 'addons-set2a-control', 'test', 'control')
+    ),
+    crash_counts AS (
+      /* Total crashes and usage time by build date and cohort */
+      SELECT
+      substr(dimensions['build_id'], 1, 8) AS build_date,
+      dimensions['e10s_cohort'] AS e10s_cohort,
+      -- Usage hours (in 1000s)
+      SUM(stats['usage_hours']) / 1000 AS usage_khours,
+      -- Total crashes for each type
+      SUM(stats['main_crashes']) AS main_crashes,
+      SUM(stats['content_crashes']) AS content_crashes,
+      SUM(stats['content_shutdown_crashes']) AS content_shutdown_crashes,
+      SUM(stats['plugin_crashes']) AS npapi_plugin_crashes,
+      SUM(stats['gmplugin_crashes']) AS media_plugin_crashes
+      FROM channel_data
+      GROUP BY 1, 2
+    ),
+    counts_over_time AS (
+      /* Base crash count dataset, excluding uninformative rows */
+      SELECT *
+      FROM crash_counts
+      WHERE usage_khours > 1
+    )
+    /* Combined crash rates by build and cohort */
+    SELECT
+    date_parse(build_date, '%Y%m%d') as build_date,
+    e10s_cohort,
+    main_crashes / usage_khours AS main_crash_rate,
+    (content_crashes - content_shutdown_crashes) / usage_khours AS content_crash_rate_noshutdown,
+    content_shutdown_crashes / usage_khours AS content_shutdown_crash_rate,
+    npapi_plugin_crashes / usage_khours AS npapi_plugin_crash_rate,
+    media_plugin_crashes / usage_khours AS media_plugin_crash_rate,
+    (main_crashes + content_crashes - content_shutdown_crashes) / usage_khours AS combined_app_crash_rate,
+    (npapi_plugin_crashes + media_plugin_crashes) / usage_khours AS combined_plugin_crash_rate
+    FROM counts_over_time
+    ORDER BY 1, 2
+  schedule: '86400'
+  visualizations:
+  - description: ''
+    id: 1678
+    name: Combined app crash rate
+    options:
+      columnMapping: {build_date: x, combined_app_crash_rate: y, e10s_cohort: series}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        addons-set2a-control: {index: 0, name: Non-e10s (add-ons), type: line, yAxis: 0,
+          zIndex: 0}
+        addons-set2a-test: {index: 0, name: E10s (add-ons), type: line, yAxis: 0,
+          zIndex: 1}
+        control: {index: 0, name: Non-e10s (no add-ons), type: line, yAxis: 0, zIndex: 2}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 3}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Build date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 1680
+    name: Main crash rate
+    options:
+      columnMapping: {build_date: x, combined_app_crash_rate: unused, combined_plugin_crash_rate: unused,
+        e10s_cohort: series, main_crash_rate: y}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        addons-set2a-control: {index: 0, name: Non-e10s (add-ons), type: line, yAxis: 0,
+          zIndex: 0}
+        addons-set2a-test: {index: 0, name: E10s (add-ons), type: line, yAxis: 0,
+          zIndex: 1}
+        control: {index: 0, name: Non-e10s (no add-ons), type: line, yAxis: 0, zIndex: 2}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 3}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Build date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 1679
+    name: Combined plugin crash rate
+    options:
+      columnMapping: {build_date: x, combined_app_crash_rate: unused, combined_plugin_crash_rate: y,
+        e10s_cohort: series}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        addons-set2a-control: {index: 0, name: Non-e10s (add-ons), type: line, yAxis: 0,
+          zIndex: 0}
+        addons-set2a-test: {index: 0, name: E10s (add-ons), type: line, yAxis: 0,
+          zIndex: 1}
+        control: {index: 0, name: Non-e10s (no add-ons), type: line, yAxis: 0, zIndex: 2}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 3}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Build date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+- api_key: 49adcd9581e4322ee402038453b4e8acd899ba1b
+  data_source: Presto
+  description: null
+  id: 940
+  name: Daily proportion of Beta 49 usage participating in addons experiment
+  query: |-
+    WITH channel_data AS (
+      /* Restrict to population and dates of interest */
+      SELECT *
+      FROM crash_aggregates
+      WHERE
+      -- Dates start from the release of Beta 49
+      submission_date >= '2016-08-03'
+      AND activity_date >= '2016-08-03'
+      -- Fx Beta 49
+      AND dimensions['application'] = 'Firefox'
+      AND dimensions['channel'] = 'beta'
+      AND dimensions['build_version'] like '49.%'
+      -- No active experiment
+      AND dimensions['experiment_id'] IS NULL
+    ),
+    usage_by_cohort_and_date AS (
+      /* Total usage hours by activity date and cohort */
+      SELECT
+      activity_date,
+      dimensions['e10s_cohort'] AS e10s_cohort,
+      SUM(stats['usage_hours']) AS usage_hours
+      FROM channel_data
+      GROUP BY 1, 2
+    ),
+    usage_by_date AS (
+      /* Total usage hours by date only */
+      SELECT
+      activity_date,
+      SUM(usage_hours) AS total_usage_hours
+      FROM usage_by_cohort_and_date
+      GROUP BY 1
+    ),
+    usage_by_cohort_with_totals AS (
+      SELECT
+      ubcad.*,
+      total_usage_hours
+      FROM usage_by_cohort_and_date AS ubcad
+      JOIN usage_by_date AS ubd
+        ON ubcad.activity_date = ubd.activity_date
+    ),
+    /* Proportion of usage by cohort and date */
+    usage_props AS (
+      SELECT
+      activity_date,
+      e10s_cohort,
+      usage_hours,
+      usage_hours / total_usage_hours as usage_prop
+      FROM usage_by_cohort_with_totals
+    )
+    /* Total usage hours and proportions for both experiments. */
+    SELECT
+    activity_date,
+    SUM(CASE WHEN e10s_cohort IN ('addons-set2a-test', 'addons-set2a-control') THEN usage_hours ELSE 0 END)
+      AS usage_hours_addons,
+    SUM(CASE WHEN e10s_cohort IN ('addons-set2a-test', 'addons-set2a-control') THEN usage_prop ELSE 0 END) * 100
+      AS usage_pct_addons,
+    SUM(CASE WHEN e10s_cohort IN ('test', 'control') THEN usage_hours ELSE 0 END)
+      AS usage_hours_std,
+    SUM(CASE WHEN e10s_cohort IN ('test', 'control') THEN usage_prop ELSE 0 END) * 100
+      AS usage_pct_std
+    FROM usage_props
+    WHERE
+    --e10s_cohort LIKE 'addons-set2a-%'
+    -- Drop the most recent day as data may be incomplete
+    --AND
+    CAST(activity_date AS date) < current_date - interval '2' day
+    GROUP BY 1
+    ORDER BY 1
+  schedule: '86400'
+  visualizations:
+  - description: ''
+    id: 1946
+    name: Daily percentage of e10s cohort usage relating to standard experiment
+    options:
+      columnMapping: {activity_date: x, usage_hours_std: unused, usage_pct_std: y}
+      globalSeriesType: line
+      legend: {enabled: false}
+      series: {stacking: null}
+      seriesOptions:
+        usage_pct_std: {index: 0, type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        type: datetime
+      yAxis:
+      - {type: linear}
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 1945
+    name: Daily usage hours for profiles in the e10s standard cohorts
+    options:
+      columnMapping: {activity_date: x, usage_hours_std: y}
+      globalSeriesType: line
+      legend: {enabled: false}
+      series: {stacking: null}
+      seriesOptions:
+        usage_hours_std: {index: 0, type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        type: datetime
+      yAxis:
+      - {type: linear}
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 1673
+    name: Daily usage hours for profiles in the e10s add-ons cohorts
+    options:
+      columnMapping: {activity_date: x, usage_hours_addons: y}
+      globalSeriesType: line
+      legend: {enabled: false}
+      series: {stacking: null}
+      seriesOptions:
+        usage_hours_addons: {index: 0, type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Usage hours}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 1674
+    name: Daily percentage of e10s cohort usage relating to add-ons experiment
+    options:
+      columnMapping: {activity_date: x, usage_pct_addons: y}
+      globalSeriesType: line
+      legend: {enabled: false}
+      series: {stacking: null}
+      seriesOptions:
+        usage_pct_addons: {index: 0, type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Percentage of usage hours}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
