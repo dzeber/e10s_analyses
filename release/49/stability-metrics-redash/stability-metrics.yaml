@@ -155,3 +155,131 @@ queries:
       - {type: linear}
       - {opposite: true, type: linear}
     type: CHART
+- api_key: 198047a7c3d756b3dcc34a03d35c93818f89099b
+  data_source: Presto
+  description: Comparison of crash rates between standard test and add-ons test cohort
+    (no control)
+  id: 1253
+  name: E10s stability comparison by activity date (Release 49)
+  query: |-
+    WITH channel_data AS (
+      /* Restrict to population and dates of interest */
+      SELECT *
+      FROM crash_aggregates
+      WHERE
+      -- Dates start from the release of Release 49
+      submission_date >= '2016-09-20'
+      AND activity_date >= '2016-09-20'
+      -- Fx Release 49
+      AND dimensions['application'] = 'Firefox'
+      AND dimensions['channel'] = 'release'
+      AND dimensions['build_version'] like '49.%'
+      -- No active experiment
+      AND dimensions['experiment_id'] IS NULL
+      -- Test groups with and without add-ons
+      AND dimensions['e10s_cohort'] IN ('addons-set49a-test', 'test')
+    ),
+    crash_counts AS (
+      /* Total crashes and usage time by date and cohort */
+      SELECT
+      activity_date,
+      dimensions['e10s_cohort'] AS e10s_cohort,
+      -- Usage hours (in 1000s)
+      SUM(stats['usage_hours']) / 1000 AS usage_khours,
+      -- Total crashes for each type
+      SUM(stats['main_crashes']) AS main_crashes,
+      SUM(stats['content_crashes']) AS content_crashes,
+      SUM(stats['content_shutdown_crashes']) AS content_shutdown_crashes,
+      SUM(stats['plugin_crashes']) AS npapi_plugin_crashes,
+      SUM(stats['gmplugin_crashes']) AS media_plugin_crashes
+      FROM channel_data
+      GROUP BY 1, 2
+    ),
+    counts_over_time AS (
+      /* Base crash count dataset, excluding uninformative rows */
+      SELECT *
+      FROM crash_counts
+      WHERE usage_khours > 1
+    )
+    /* Compute crash rates for each crash type as well as combined */
+    SELECT
+    activity_date,
+    e10s_cohort,
+    main_crashes / usage_khours AS main_crash_rate,
+    (content_crashes - content_shutdown_crashes) / usage_khours AS content_crash_rate_noshutdown,
+    content_shutdown_crashes / usage_khours AS content_shutdown_crash_rate,
+    npapi_plugin_crashes / usage_khours AS npapi_plugin_crash_rate,
+    media_plugin_crashes / usage_khours AS media_plugin_crash_rate,
+    (main_crashes + content_crashes - content_shutdown_crashes) / usage_khours AS combined_app_crash_rate,
+    (npapi_plugin_crashes + media_plugin_crashes) / usage_khours AS combined_plugin_crash_rate
+    FROM counts_over_time
+    -- Drop the most recent days as data may be incomplete
+    WHERE CAST(activity_date AS date) < current_date - interval '2' day
+    ORDER BY activity_date, e10s_cohort ASC
+  schedule: '86400'
+  visualizations:
+  - description: ''
+    id: 2171
+    name: Combined app crash rate (main/content)
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, combined_app_crash_rate: y, combined_plugin_crash_rate: unused,
+        e10s_cohort: series, main_crash_rate: unused}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 2170
+    name: Combined plugin crash rate
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, combined_app_crash_rate: unused, combined_plugin_crash_rate: y,
+        e10s_cohort: series, main_crash_rate: unused}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 2169
+    name: Main crash rate
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, e10s_cohort: series, main_crash_rate: y}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: normal}
+      seriesOptions:
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
