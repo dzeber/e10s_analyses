@@ -1,8 +1,7 @@
 queries:
 - api_key: ac651fbb9ef43be31d0415548c3b3042828b0f88
   data_source: Presto
-  description: In Release 49, 100% of the eligible population should be placed in
-    the test cohorts (no control)
+  description: ''
   id: 1245
   name: Daily proportion of Release 49 usage in e10s cohorts
   query: |
@@ -91,9 +90,11 @@ queries:
       sortX: true
       xAxis:
         labels: {enabled: true}
+        title: {text: Activity date}
         type: datetime
       yAxis:
-      - {type: linear}
+      - title: {text: Percentage of usage hours}
+        type: linear
       - {opposite: true, type: linear}
     type: CHART
   - description: ''
@@ -111,9 +112,11 @@ queries:
       sortX: true
       xAxis:
         labels: {enabled: true}
+        title: {text: Activity date}
         type: datetime
       yAxis:
-      - {type: linear}
+      - title: {text: Usage hours}
+        type: linear
       - {opposite: true, type: linear}
     type: CHART
   - description: ''
@@ -131,9 +134,11 @@ queries:
       sortX: true
       xAxis:
         labels: {enabled: true}
+        title: {text: Activity date}
         type: datetime
       yAxis:
-      - {type: linear}
+      - title: {text: Usage hours}
+        type: linear
       - {opposite: true, type: linear}
     type: CHART
   - description: ''
@@ -150,15 +155,16 @@ queries:
       sortX: true
       xAxis:
         labels: {enabled: true}
+        title: {text: Activity date}
         type: datetime
       yAxis:
-      - {type: linear}
+      - title: {text: Percentage of usage hours}
+        type: linear
       - {opposite: true, type: linear}
     type: CHART
 - api_key: 198047a7c3d756b3dcc34a03d35c93818f89099b
   data_source: Presto
-  description: Comparison of crash rates between standard test and add-ons test cohort
-    (no control)
+  description: ''
   id: 1253
   name: E10s stability comparison by activity date (Release 49)
   query: |-
