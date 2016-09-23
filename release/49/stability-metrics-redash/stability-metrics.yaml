@@ -70,7 +70,7 @@ queries:
     FROM usage_props
     WHERE
     -- Drop the most recent days as data may be incomplete
-    CAST(activity_date AS date) < current_date - interval '2' day
+    CAST(activity_date AS date) < current_date - interval '1' day
     GROUP BY 1
     ORDER BY 1
   schedule: '86400'
@@ -220,7 +220,7 @@ queries:
     (npapi_plugin_crashes + media_plugin_crashes) / usage_khours AS combined_plugin_crash_rate
     FROM counts_over_time
     -- Drop the most recent days as data may be incomplete
-    WHERE CAST(activity_date AS date) < current_date - interval '2' day
+    WHERE CAST(activity_date AS date) < current_date - interval '1' day
     ORDER BY activity_date, e10s_cohort ASC
   schedule: '86400'
   visualizations:
