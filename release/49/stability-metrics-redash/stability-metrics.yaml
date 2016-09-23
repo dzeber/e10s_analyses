@@ -235,6 +235,8 @@ queries:
       legend: {enabled: true}
       series: {stacking: null}
       seriesOptions:
+        addons-set49a-test: {index: 0, name: E10s with add-ons, type: line, yAxis: 0,
+          zIndex: 1}
         test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
       sortX: true
       xAxis:
@@ -257,6 +259,8 @@ queries:
       legend: {enabled: true}
       series: {stacking: null}
       seriesOptions:
+        addons-set49a-test: {index: 0, name: E10s with add-ons, type: line, yAxis: 0,
+          zIndex: 1}
         test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
       sortX: true
       xAxis:
@@ -278,6 +282,8 @@ queries:
       legend: {enabled: true}
       series: {stacking: normal}
       seriesOptions:
+        addons-set49a-test: {index: 0, name: E10s with add-ons, type: line, yAxis: 0,
+          zIndex: 1}
         test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
       sortX: true
       xAxis:
