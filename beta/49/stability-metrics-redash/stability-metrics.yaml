@@ -355,6 +355,7 @@ queries:
     id: 1946
     name: Daily percentage of e10s cohort usage relating to standard experiment
     options:
+      bottomMargin: 50
       columnMapping: {activity_date: x, usage_hours_std: unused, usage_pct_std: y}
       globalSeriesType: line
       legend: {enabled: false}
@@ -364,15 +365,18 @@ queries:
       sortX: true
       xAxis:
         labels: {enabled: true}
+        title: {text: Activity date}
         type: datetime
       yAxis:
-      - {type: linear}
+      - title: {text: Percentage of usage hours}
+        type: linear
       - {opposite: true, type: linear}
     type: CHART
   - description: ''
     id: 1945
     name: Daily usage hours for profiles in the e10s standard cohorts
     options:
+      bottomMargin: 50
       columnMapping: {activity_date: x, usage_hours_std: y}
       globalSeriesType: line
       legend: {enabled: false}
@@ -382,9 +386,11 @@ queries:
       sortX: true
       xAxis:
         labels: {enabled: true}
+        title: {text: Activity date}
         type: datetime
       yAxis:
-      - {type: linear}
+      - title: {text: Usage hours}
+        type: linear
       - {opposite: true, type: linear}
     type: CHART
   - description: ''
