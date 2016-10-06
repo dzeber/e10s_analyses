@@ -1,7 +1,7 @@
 queries:
 - api_key: 026f8f271bb9178a90bbf2657d725d887a868f02
   data_source: Presto
-  description: null
+  description: Deprecated in favour of  https://sql.telemetry.mozilla.org/queries/1348
   id: 939
   name: E10s add-ons stability comparison by activity date (Beta 49)
   query: |-
@@ -140,7 +140,7 @@ queries:
     type: CHART
 - api_key: cd336de5127ef0c53caa757341b31c8646b00371
   data_source: Presto
-  description: null
+  description: Deprecated in favour of https://sql.telemetry.mozilla.org/queries/1350
   id: 941
   name: E10s add-ons stability comparison by build (Beta 49)
   query: |-
@@ -277,7 +277,7 @@ queries:
     type: CHART
 - api_key: 49adcd9581e4322ee402038453b4e8acd899ba1b
   data_source: Presto
-  description: null
+  description: Deprecated in favour of https://sql.telemetry.mozilla.org/queries/1352
   id: 940
   name: Daily proportion of Beta 49 usage participating in addons experiment
   query: |-
