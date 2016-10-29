@@ -1,0 +1,158 @@
+---
+title: Impact of add-on SDK fix
+date: Updated `r format(Sys.Date(), "%B %d, %Y")`
+output:
+    html_document:
+        theme: flatly
+        toc: true
+        toc_float: true
+---
+
+```{r setup, include = FALSE}
+options(stringsAsFactors = FALSE)
+library(feather)
+library(data.table)
+library(ggplot2)
+
+## ggplot theme: light.
+theme_set(theme_light())
+
+## Format large numbers as a string, using the comma to separate thousands.
+bigNum <- function(nums) {
+    prettyNum(nums, big.mark = ",")
+}
+
+## Convenience functions for ggplot2.
+devtools::source_url("https://raw.githubusercontent.com/dzeber/work-tools/master/R/utils/ggplot.R")
+```
+
+Load the data and reformat some columns.
+
+```{r load-data}
+dd <- as.data.table(read_feather("addon-sdk-startup-data_2016-10-28.feather"))
+dd[, interrupted_startup := as.logical(startup_interrupted)][,
+    startup_interrupted := NULL]
+dd[, build_date := as.Date(substr(build_id, 1, 8), format = "%Y%m%d")]
+## Ignore versions for Mac and Linux.
+dd[sys_os != "Windows_NT", sys_os_version := NA]
+
+## Split up the add-ons string, into a list of (name, version).
+dd[, addons_nonsys := { aspl <- strsplit(addons_nonsys, ",", fixed = TRUE)
+    aspl <- lapply(aspl, strsplit, ":", fixed = TRUE)
+    lapply(aspl, function(alist) { lapply(alist, function(avec) {
+        if(length(avec) == 1) avec <- c(avec, NA)
+        names(avec) <- c("name", "version")
+        avec
+    })})
+}]
+dd[, addons_nonsys_num := sapply(addons_nonsys, length)]
+setkey(dd, "client_id")
+```
+
+How many sessions have weird startup times?
+
+```{r startup-san}
+startup_cols <- grep("^startup", names(dd), value = TRUE)
+
+## Check for missing values.
+na_startup <- dd[, setNames(lapply(startup_cols, function(scol) { is.na(get(scol)) }),
+   sprintf("na_%s", startup_cols))]
+na_startup[, na_any := Reduce("|", as.list(na_startup))]
+cat("Percentages with missing values: \n")
+print(lapply(na_startup, function(vals) { mean(vals) * 100 }))
+
+## Check for negatives.
+neg_startup <- dd[, setNames(lapply(startup_cols,
+    function(scol) { scol <- get(scol); !is.na(scol) & scol < 0 }),
+    sprintf("neg_%s", startup_cols))]
+neg_startup[, neg_any := Reduce("|", as.list(neg_startup))]
+cat("Percentages with negative values: \n")
+print(lapply(neg_startup, function(vals) { mean(vals) * 100 }))
+
+## Remove weird values.
+dd <- dd[na_startup[, !na_any] & neg_startup[, !neg_any]]
+```
+
+Are times ordered as we expect?
+
+```{r time-order}
+cat("How many sessions fail to have main <= toplevelwindow <= firstpaint?\n")
+unordered <- nrow(dd[!(startup_main <= startup_toplevelwindow &
+    startup_toplevelwindow <= startup_firstpaint)])
+cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
+
+cat("\nHow many sessions fail to have firstpaint <= sessionrestored?\n")
+unordered <- nrow(dd[startup_firstpaint > startup_sessionrestored])
+cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
+
+cat("\nHow many sessions fail to have AMI_begin <= AMI_end?\n")
+unordered <- nrow(dd[startup_AMIstart > startup_AMIend])
+cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
+
+## Remove those with out-of-order AMI timestamps.
+dd <- dd[startup_AMIstart <= startup_AMIend]
+```
+
+What are the features of our client population?
+
+```{r client-submissions}
+## Number of sessions per client.
+nsess_dist <- dd[, list(nsess = .N), by = client_id][, Ecdf(nsess)]
+## Remove dummy first row.
+nsess_dist <- nsess_dist[-1]
+setnames(nsess_dist, c("num_sessions", "p"))
+qplot(num_sessions, p, data = nsess_dist, geom = "point") + geom_line() +
+    scale_x_continuous(breaks = interval.breaks(10), limits = c(0, 50)) +
+    scale_y_continuous(breaks = interval.breaks(0.1), labels = pct.labels,
+        limits = c(0, 1)) +
+        labs(title = "ECDF of # submissions per client",
+            x = "N = # submissions",
+            y = "% of clients with at most N submissions")
+```
+
+How many clients have e10s, addons, and are present in both periods?
+
+```{r client-features}
+client_feats <- dd[, { d <- list()
+    e10s <- unique(e10s)
+    d[["e10s"]] <- if(length(e10s) == 2) "both" else c("off", "on")[e10s + 1]
+    num_addons <- unique(addons_nonsys_num)
+    d[["addons"]] <- if(length(num_addons) > 1) "changes" else {
+        if(num_addons == 0) "none" else {
+            ## Every session has the same number of add-ons.
+            ## Check if they're all the same.
+            addons_str <- lapply(addons_nonsys, function(alist) {
+                as.character(lapply(alist, paste, collapse = ":")) })
+            if(length(unique(unlist(addons_str))) == length(addons_str[[1]])) {
+                "fixed" } else { "changes" }
+        }
+    }
+    periods <- unique(period)
+    d[["periods"]] <- if(length(periods) == 2) "both" else period
+    d }, by = client_id]
+client_feats <- unique(client_feats)
+
+for(col in c("e10s", "addons", "periods")) {
+    cnts <- client_feats[, .N, by = col]
+    cnts[, pct := N / sum(N) * 100]
+    cnts[, N := bigNum(N)][, pct := sprintf("%.2f", pct)]
+    print(cnts)
+    cat("\n\n")
+}
+```
+
+Summarize startup times using the median for each client.
+```{r startup-plot}
+startup_client <- dd[, setNames(lapply(startup_cols, function(scol) { median(get(scol)) }),
+    startup_cols), by = list(e10s, has_addons = addons_nonsys_num > 0, period, client_id)]
+## Take sample of clients in each cell.
+startup_samp <- startup_client[, if(.N > 500) .SD[sample.int(.N, 500)] else .SD,
+    by = list(e10s, has_addons, period)]
+
+milestones <- c("main", "AMIstart", "AMIend", "toplevelwindow", "firstpaint", "sessionrestored")
+startup_gg <- startup_samp[, list(milestone = milestones,
+    time_ms = as.numeric(.SD[1, sprintf("startup_%s", milestones), with = FALSE])),
+    by = list(e10s, has_addons, period, client_id)]
+    
+```
+
