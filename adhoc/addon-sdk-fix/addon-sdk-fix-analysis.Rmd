@@ -11,6 +11,7 @@ output:
 ```{r setup, include = FALSE}
 options(stringsAsFactors = FALSE)
 library(feather)
+library(rjson)
 library(data.table)
 library(ggplot2)
 
@@ -26,71 +27,80 @@ bigNum <- function(nums) {
 devtools::source_url("https://raw.githubusercontent.com/dzeber/work-tools/master/R/utils/ggplot.R")
 ```
 
-Load the data and reformat some columns.
+First, load the table of MPC add-ons and identify those most affected by the fix.
 
-```{r load-data}
-dd <- as.data.table(read_feather("addon-sdk-startup-data_2016-10-28.feather"))
-dd[, interrupted_startup := as.logical(startup_interrupted)][,
-    startup_interrupted := NULL]
-dd[, build_date := as.Date(substr(build_id, 1, 8), format = "%Y%m%d")]
+```{r addons-table, eval = FALSE}
+addonsDT <- fread("addons-mpc.csv")
+## Change "None" to NA.
+for(col in names(addonsDT)) {
+    addonsDT[get(col) == "None", eval(col) := NA]
+}
+## Convert boolean columns to logical (loaded as character because of "None"s)
+## via numeric (since "TRUE/FALSE" strings were loaded as "1"/"0").
+bool_cols <- c("node_modules", "packages", "package_json")
+addonsDT[, eval(bool_cols) :=
+    lapply(bool_cols, function(col) { as.logical(as.numeric(get(col))) })]
+## Add-ons affected by the fix have package_json TRUE and large numbers of
+## JS files.
+affectedAddonsDT <- addonsDT[package_json == TRUE,
+    list(guid = id, users, js_files,
+        name = sub("^([^/]*/)+([^-]+)(.*)$", "\\2", download_url))]
+save(addonsDT, affectedAddonsDT, file = "addons-tables.RData")
+```
+
+Load and format the data. It is split across 3 data tables:
+
+- `main` with one row per session containing scalar measures
+- `addons` with one row per add-on per session
+- `hangs` with one row per hang time (histogram bin) per session
+
+```{r load-data, eval = FALSE}
+datadir <- "addon-sdk-fix-data_2016-11-01"
+dt_main <- as.data.table(read_feather(file.path(datadir, "main.feather")))
+dt_addons <- as.data.table(read_feather(file.path(datadir, "addons.feather")))
+dt_hangs <- as.data.table(read_feather(file.path(datadir, "hangs.feather")))
+
+## Reformat some columns for convenience.
+dt_main[, build_date := as.Date(substr(build_id, 1, 8), format = "%Y%m%d")]
 ## Ignore versions for Mac and Linux.
-dd[sys_os != "Windows_NT", sys_os_version := NA]
+dt_main[sys_os != "Windows_NT", sys_os_version := NA]
 
-## Split up the add-ons string, into a list of (name, version).
-dd[, addons_nonsys := { aspl <- strsplit(addons_nonsys, ",", fixed = TRUE)
-    aspl <- lapply(aspl, strsplit, ":", fixed = TRUE)
-    lapply(aspl, function(alist) { lapply(alist, function(avec) {
-        if(length(avec) == 1) avec <- c(avec, NA)
-        names(avec) <- c("name", "version")
-        avec
-    })})
-}]
-dd[, addons_nonsys_num := sapply(addons_nonsys, length)]
-setkey(dd, "client_id")
-```
+## Identify add-ons of interest.
 
-How many sessions have weird startup times?
+## Categorize add-ons according to the number of JS files:
+## 50+ (heavy), 20-50 (medium), all (affected).
+affectedAddonsDT[, heavy_js := js_files >= 50][,
+    medium_js := js_files >= 20 & js_files < 50][,
+    affected := TRUE]
+setkey(affectedAddonsDT, guid)
+setkey(dt_addons, guid)
+dt_addons_cols <- names(dt_addons)
+affected_addons_cols <- c("heavy_js", "medium_js", "affected")
+dt_addons <- affectedAddonsDT[dt_addons,
+    c(dt_addons_cols, affected_addons_cols), with = FALSE]
+for(acol in affected_addons_cols)
+    dt_addons[is.na(get(acol)), eval(acol) := FALSE]
+## Identify VDH 6.1.1 separately.
+dt_addons[, is_vdh := (guid == "{b9db16a4-6edc-47ec-a1f4-b86292ed211d}" &
+    substr(version, 1, 5) == "6.1.1")]
 
-```{r startup-san}
-startup_cols <- grep("^startup", names(dd), value = TRUE)
+### TODO: found num_addons_nonsys != 0 for a session with no entry in dt_addons.
+### something weird is going on
 
-## Check for missing values.
-na_startup <- dd[, setNames(lapply(startup_cols, function(scol) { is.na(get(scol)) }),
-   sprintf("na_%s", startup_cols))]
-na_startup[, na_any := Reduce("|", as.list(na_startup))]
-cat("Percentages with missing values: \n")
-print(lapply(na_startup, function(vals) { mean(vals) * 100 }))
+## Summarize each sessions add-ons according to whether they had affected
+## add-ons.
+session_addons <- dt_addons[, list(has_vdh = any(is_vdh),
+    num_addons_affected = sum(affected),
+    num_addons_medium_js = sum(medium_js),
+    num_addons_heavy_js = sum(heavy_js)),
+    keyby = session_id]
+setkey(dt_main, session_id)
+dt_main <- session_addons[dt_main]
+dt_main[is.na(has_vdh), has_vdh := FALSE]
+for(acol in grep("^num_addons", names(session_addons), value = TRUE))
+    dt_main[is.na(get(acol)), eval(acol) := 0]
 
-## Check for negatives.
-neg_startup <- dd[, setNames(lapply(startup_cols,
-    function(scol) { scol <- get(scol); !is.na(scol) & scol < 0 }),
-    sprintf("neg_%s", startup_cols))]
-neg_startup[, neg_any := Reduce("|", as.list(neg_startup))]
-cat("Percentages with negative values: \n")
-print(lapply(neg_startup, function(vals) { mean(vals) * 100 }))
-
-## Remove weird values.
-dd <- dd[na_startup[, !na_any] & neg_startup[, !neg_any]]
-```
-
-Are times ordered as we expect?
-
-```{r time-order}
-cat("How many sessions fail to have main <= toplevelwindow <= firstpaint?\n")
-unordered <- nrow(dd[!(startup_main <= startup_toplevelwindow &
-    startup_toplevelwindow <= startup_firstpaint)])
-cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
-
-cat("\nHow many sessions fail to have firstpaint <= sessionrestored?\n")
-unordered <- nrow(dd[startup_firstpaint > startup_sessionrestored])
-cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
-
-cat("\nHow many sessions fail to have AMI_begin <= AMI_end?\n")
-unordered <- nrow(dd[startup_AMIstart > startup_AMIend])
-cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
-
-## Remove those with out-of-order AMI timestamps.
-dd <- dd[startup_AMIstart <= startup_AMIend]
+save(list = ls(pattern = "^dt_"), file = "addon-sdk-working-data.RData")
 ```
 
 What are the features of our client population?
@@ -141,6 +151,50 @@ for(col in c("e10s", "addons", "periods")) {
 }
 ```
 
+How many sessions have weird startup times?
+
+```{r startup-san}
+startup_cols <- grep("^startup", names(dd), value = TRUE)
+
+## Check for missing values.
+na_startup <- dd[, setNames(lapply(startup_cols, function(scol) { is.na(get(scol)) }),
+   sprintf("na_%s", startup_cols))]
+na_startup[, na_any := Reduce("|", as.list(na_startup))]
+cat("Percentages with missing values: \n")
+print(lapply(na_startup, function(vals) { mean(vals) * 100 }))
+
+## Check for negatives.
+neg_startup <- dd[, setNames(lapply(startup_cols,
+    function(scol) { scol <- get(scol); !is.na(scol) & scol < 0 }),
+    sprintf("neg_%s", startup_cols))]
+neg_startup[, neg_any := Reduce("|", as.list(neg_startup))]
+cat("Percentages with negative values: \n")
+print(lapply(neg_startup, function(vals) { mean(vals) * 100 }))
+
+## Remove weird values.
+dd <- dd[na_startup[, !na_any] & neg_startup[, !neg_any]]
+```
+
+Are times ordered as we expect?
+
+```{r time-order}
+cat("How many sessions fail to have main <= toplevelwindow <= firstpaint?\n")
+unordered <- nrow(dd[!(startup_main <= startup_toplevelwindow &
+    startup_toplevelwindow <= startup_firstpaint)])
+cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
+
+cat("\nHow many sessions fail to have firstpaint <= sessionrestored?\n")
+unordered <- nrow(dd[startup_firstpaint > startup_sessionrestored])
+cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
+
+cat("\nHow many sessions fail to have AMI_begin <= AMI_end?\n")
+unordered <- nrow(dd[startup_AMIstart > startup_AMIend])
+cat(sprintf("%s (%.2f%%)\n", bigNum(unordered), unordered / nrow(dd) * 100))
+
+## Remove those with out-of-order AMI timestamps.
+dd <- dd[startup_AMIstart <= startup_AMIend]
+```
+
 Summarize startup times using the median for each client.
 ```{r startup-plot}
 startup_client <- dd[, setNames(lapply(startup_cols, function(scol) { median(get(scol)) }),
@@ -153,6 +207,9 @@ milestones <- c("main", "AMIstart", "AMIend", "toplevelwindow", "firstpaint", "s
 startup_gg <- startup_samp[, list(milestone = milestones,
     time_ms = as.numeric(.SD[1, sprintf("startup_%s", milestones), with = FALSE])),
     by = list(e10s, has_addons, period, client_id)]
+startup_gg[, milestone := factor(milestone, levels = milestones)]
+startup_gg[, facet := sprintf("e10s %s, %saddons", c("off", "on")[e10s + 1],
+    c("no ", "")[has_addons + 1])]
     
 ```
 
