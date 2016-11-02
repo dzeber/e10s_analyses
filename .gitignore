@@ -3,3 +3,12 @@
 
 # IPython notebook checkpoints
 .ipynb_checkpoints
+
+# Data files
+*.gz
+*.csv
+*.RData
+*.feather
+
+# R stuff
+.Rhistory
