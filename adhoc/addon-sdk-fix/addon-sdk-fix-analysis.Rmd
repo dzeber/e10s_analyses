@@ -41,7 +41,9 @@ pctLabelText <- function(props, dec = 1) {
 devtools::source_url("https://raw.githubusercontent.com/dzeber/work-tools/master/R/utils/ggplot.R")
 ```
 
-First, load the table of MPC add-ons and identify those most affected by the fix.
+## Data munging
+
+First, load the [table of MPC add-ons](https://docs.google.com/spreadsheets/d/1npPziibb6-9QnJDbQdGc5We9LuPEabhrKoYJ9nl8ko4/edit?usp=sharing) and identify those most affected by the fix.
 
 ```{r addons-table, eval = FALSE}
 addonsDT <- fread("addons-mpc.csv")
@@ -62,11 +64,19 @@ affectedAddonsDT <- addonsDT[package_json == TRUE,
 save(addonsDT, affectedAddonsDT, file = "addons-tables.RData")
 ```
 
-Load and format the data. It is split across 3 data tables:
+Load the UT data collected in [this notebook](https://github.com/dzeber/e10s_analyses/blob/50-startup-analysis/adhoc/addon-sdk-fix/Add-on%20SDK%20fix%20analysis.ipynb).
+It is split across 3 data tables:
 
 - `main` with one row per session containing scalar measures
 - `addons` with one row per add-on per session
 - `hangs` with one row per hang time (histogram bin) per session
+
+The data consists of UT sessions from Nightly over two periods:
+
+- `before`: builds dated between 2016-10-09 and 2016-10-15
+- `after`: builds dated between 2016-10-24 and 2016-10-31
+
+The `after` builds have the updated add-on SDK code.
 
 ```{r load-data, eval = FALSE}
 datadir <- "addon-sdk-fix-data_2016-11-02"
@@ -98,7 +108,7 @@ for(acol in affected_addons_cols)
 dt_addons[, is_vdh := (guid == "{b9db16a4-6edc-47ec-a1f4-b86292ed211d}" &
     substr(version, 1, 5) == "6.1.1")]
 
-## Summarize each sessions add-ons according to whether they had affected
+## Summarize each session's add-ons according to whether they had affected
 ## add-ons.
 session_addons <- dt_addons[, list(has_vdh = any(is_vdh),
     num_addons_affected = sum(affected),
@@ -115,23 +125,34 @@ rm(dt_addons_cols)
 save(list = ls(pattern = "^dt_"), file = "addon-sdk-working-data.RData")
 ```
 
-```{r load-from-rdata}
+```{r load-from-rdata, echo = FALSE}
 load("addons-tables.RData")
 load("addon-sdk-working-data.RData")
 ```
 
-Focus first on "good" profiles, that were active both before and after the change, and had a constant e10s setting and list of active add-ons (ignoring add-on versions) throughout.
+What does this data look like?
+
+```{r data-head}
+head(dt_main)
+head(dt_addons)
+head(dt_hangs)
+```
+
+### Longitudinal histories
+
+Ideally, we want to focus on profiles that were active both before and after the change, so that we can compare the paired before/after differences across profiles.
+To do this, we also require profiles to have a constant e10s setting and list of active non-system add-ons (ignoring add-on versions) across all their sessions.
 
 ```{r good-prof}
 dt_good <- dt_main[both_periods & constant_e10s & constant_addons_guid]
 nprof_good <- dt_good[, length(unique(client_id))]
 ```
 
-We have `bigNum(nprof_good)` such profiles
-(`pctLabelText(nprof_good / dt_main[, length(unique(client_id))])`) with a total of
-`bigNum(nrow(dt_good))` (`pctLabelText(nrow(dt_good) / nrow(dt_main))`) sessions.
+We have `r bigNum(nprof_good)` such profiles
+(`r pctLabelText(nprof_good / dt_main[, length(unique(client_id))])`) with a total of
+`r bigNum(nrow(dt_good))` (`r pctLabelText(nrow(dt_good) / nrow(dt_main))`) sessions.
 
-How many sessions have e10s enabled, and have add-ons?
+How many sessions have e10s enabled, and have (non-system) add-ons?
 
 ```{r good-prof-counts}
 dt_good[, list(n_sessions = .N), by = list(e10s, has_addons = num_addons_nonsys > 0)][
@@ -139,6 +160,8 @@ dt_good[, list(n_sessions = .N), by = list(e10s, has_addons = num_addons_nonsys 
     pct_sessions := pctLabelText(n_sessions / nrow(dt_good))][,
     n_sessions := bigNum(n_sessions)][]
 ```
+
+Note that the vast majority of profiles have e10s enabled and have non-system active add-ons.
 
 For those sessions that have add-ons, how many have add-ons most affected by the changes, and specifically VDH?
 
@@ -151,48 +174,75 @@ dt_good[num_addons_nonsys > 0, list(n_sessions = .N),
     n_sessions := bigNum(n_sessions)][]
 ```
 
-Compare the hang stats before and after for each profile.
-Summarize a session's hang times by the mean of log times reported during that session.
-Count a session with no hangs as 0.
+## Comparisons
+
+We compare sessions before and after the fixes landed on the basis of hang times, for hangs that are related to `sdk/addon/runner.js` (have this script appearing in their stack trace).
+If a profile did have such hangs, they are recorded in a histogram split on [256, 512, ..., 16384]
+(times in ms).
+Both a reduction in occurrence of hangs and a reduction in the hang times themselves are considered improvements.
+
+### Per-session hangs
+
+As a first pass, compare the hang stats for individual sessions before and after.
+A session's hang times are summarized by taking the log (base 2) of the values (histogram breaks), and taking the mean over all values observed in that session.
+Under this transformation, hang times range on a linear scale between 8 and 14.
+Separate out sessions with no hangs.
 
 ```{r good-prof-hangs}
-dt_hangs_mean <- dt_hangs[, list(hang_time = wtd.mean(log(hang_time + 1, 2), count)), keyby = session_id]
+dt_hangs_mean <- dt_hangs[, list(hang_time = wtd.mean(log(hang_time + 1, 2), count),
+    ## Total hang time over the session.
+    hang_time_tot = sum(log(hang_time + 1, 2) * count)), keyby = session_id]
 setkey(dt_good, session_id)
 dt_good <- dt_hangs_mean[dt_good]
-dt_good[is.na(hang_time), hang_time := 0]
+dt_good[is.na(hang_time), hang_time := 1][is.na(hang_time_tot), hang_time_tot := 1]
 ## Drop sessions with interrupted startup.
 dt_good <- dt_good[was_startup_interrupted == FALSE]
 ## Order the period labels for display.
 dt_good[, period := factor(period, levels = c("before", "after"))]
 ## Add indicators for add-ons.
-dt_good[, has_addons := factor(ifelse(num_addons_nonsys > 0, "has addons", "no addons"), levels = c("has addons", "no addons"))]#[,
-#    has_addons_affected := num_addons_affected > 0][,
-#    has_addons_medium_js := num_addons_medium_js > 0][,
-#    has_addons_heavy_js := num_addons_heavy_js > 0]
+dt_good[, addon_state := factor(ifelse(num_addons_nonsys > 0,
+    ifelse(num_addons_affected > 0, "has affected addons", "has addons, no affected"), "no addons"),
+    levels = c("has affected addons", "has addons, no affected", "no addons"))]
 dt_good[, e10s_state := factor(ifelse(e10s, "e10s on", "e10s off"), levels = c("e10s on", "e10s off"))]
-
 ```
 
-Are there differences in per-session hang times?
-Separate sessions with hangs from those without.
+Are there differences in per-session mean hang times, across sessions with hangs?
+Break down by e10s status and addons present.
 
 ```{r good-hang-diff-session-box, fig.height = 9}
 ## Boxplots of hang times for sessions with hangs.
 ggplot(dt_good[has_hangs == TRUE], aes(period, hang_time)) +
     geom_boxplot() +
-    ## Expand over range of possible hang times.
-    #expand_limits(y = dt_hangs[, range(log(hang_time + 1, 2)) + c(-1, 1)]) +
-    facet_grid(e10s_state ~ has_addons) +
+    facet_grid(e10s_state ~ addon_state) +
     labs(title = "Per-session mean hang (runner.js) times before and after the change\nfor sessions with hangs",
         x = "Period",
-        y = "log2(hang time)")
+        y = "Mean log2(hang time)")
 ```
+
+This already shows that mean hang times have clearly improved after the fixes landed.
+
+Consider also total hang times over the session, which corresponds more closely to the user's experience.
+
+```{r good-hang-diff-session-box-tot, fig.height = 9}
+## Boxplots of hang times for sessions with hangs.
+ggplot(dt_good[has_hangs == TRUE], aes(period, log(hang_time_tot))) +
+    geom_boxplot() +
+    facet_grid(e10s_state ~ addon_state) +
+    labs(title = "Per-session total hang (runner.js) times before and after the change\nfor sessions with hangs",
+        x = "Period",
+        y = "Total log2(hang time)")
+```
+
+These distributions are highly skewed, as they depend among other things on the number of installed add-ons. However, there are signs of improvement overall.
+
+Finally, compare the proportions of sessions that have hangs.
+
 ```{r good-hang-diff-session-pct, fig.height = 7}
 ## Proportions of sessions without hangs.
-ggplot(dt_good[, list(prop_hangs = mean(has_hangs)), by = list(e10s_state, has_addons, period)],
-        aes(factor(period, levels = rev(levels(period))), prop_hangs)) +
-    geom_bar(stat = "identity") + #coord_flip() +
-    facet_grid(e10s_state ~ has_addons) +
+ggplot(dt_good[, list(prop_hangs = mean(has_hangs)), by = list(e10s_state, addon_state, period)],
+        aes(period, prop_hangs)) +
+    geom_bar(stat = "identity") +
+    facet_grid(e10s_state ~ addon_state) +
     scale_y_continuous(breaks = interval.breaks(0.2), labels = pct.labels,
         limits = c(0,1)) +
     labs(title = "Percentage of sessions with hangs (runner.js)",
@@ -200,55 +250,104 @@ ggplot(dt_good[, list(prop_hangs = mean(has_hangs)), by = list(e10s_state, has_a
         y = "Percent of sessions")
 ```
 
-Look into the per-client before/after differences.
+Here again are signs of improvement. This also shows that affected add-ons are much more likely to cause hangs than other add-ons, as expected.
+
+
+### Per-client hangs
+
+We now compare the change from before to after on a per-client basis.
+A client's hangs in each period are summarized by taking the mean of the per-session means, as described above.
+For this purpose, sessions with no hangs are counted as 1.
+We look at both the change in mean hang time for profiles that had hangs either before or after, as well as the change in the proportion of sessions with hangs.
 
 ```{r good-hang-diff-prof-overall-box, fig.height = 7}
 ## Many columns should have the same value across all sessions for a given client.
+## Just keep a single client-level value for these.
 per_client_cols <- c("e10s", "e10s_state", "num_addons_nonsys", "num_addons_affected",
     "num_addons_medium_js", "num_addons_heavy_js", "has_vdh",
     grep("^sys", names(dt_good), value = TRUE))
-dt_good_prof <- dt_good[, c(list(hang_time = mean(hang_time[period == "after"]) - mean(hang_time[period == "before"]),
-    has_hangs = any(has_hangs)),
+dt_good_prof <- dt_good[, c(list(
+    hang_time_diff = mean(hang_time[period == "after"]) - mean(hang_time[period == "before"]),
+    has_hangs_before = any(has_hangs[period == "before"]),
+    has_hangs_after = any(has_hangs[period == "after"]),
+    n_sess_before = sum(period == "before"),
+    n_sess_after = sum(period == "after"),
+    p_sess_hangs_before = mean(has_hangs[period == "before"]),
+    p_sess_hangs_after = mean(has_hangs[period == "after"]),
+    p_hangs_diff = mean(has_hangs[period == "after"]) - mean(has_hangs[period == "before"])),
     setNames(lapply(per_client_cols, function(ccol) { get(ccol)[1] }), per_client_cols)),
     by = client_id]
+dt_good_prof[, has_hangs := has_hangs_before | has_hangs_after]
 
 ## Make boxplots of differences according to add-on types and e10s status, for profiles that had hangs.
-dt_good_prof[, addon_type := factor(ifelse(num_addons_nonsys == 0, "no addons",
-    ifelse(num_addons_affected == 0, "addons,\nno affected",
-    ifelse(num_addons_heavy_js == 0, "has affected,\nno heavy-js",
-    ifelse(!has_vdh, "has heavy-js", "has VDH")))),
-    levels = c("no addons", "addons,\nno affected", "has affected,\nno heavy-js",
-        "has heavy-js", "has VDH"))]
+add_addon_type_col <- function(DT) {
+    DT[, addon_type := factor(ifelse(num_addons_nonsys == 0, "no addons",
+        ifelse(num_addons_affected == 0, "addons,\nno affected",
+        ifelse(num_addons_heavy_js == 0, "has affected,\nno heavy-js",
+        ifelse(!has_vdh, "has heavy-js", "has VDH")))),
+        levels = c("no addons", "addons,\nno affected", "has affected,\nno heavy-js",
+            "has heavy-js", "has VDH"))]
+}
+add_addon_type_col(dt_good_prof)
 
-plot_diff_addon <- function() {
-    ggplot(dt_good_prof[has_hangs == TRUE], aes(addon_type, hang_time)) +
+## Boxplots of mean difference of hang times by add-on type.
+plot_diff_addon <- function(DT) {
+    ggplot(DT, aes(addon_type, hang_time_diff)) +
         geom_boxplot() +
         geom_hline(yintercept = 0, size = 0.5, colour = "blue") +
         scale_y_continuous(breaks = interval.breaks(4)) +
-        labs(title = "(After - before) difference in client mean hang (runner.js) times\nfor clients with hangs (negative means improvement)",
+        labs(title = "Change in client mean hang (runner.js) times\nfor clients with hangs (negative means improvement)",
             x = "Client's add-ons type",
             y = "Difference in log2(hang time)")
 }
-plot_diff_addon() + facet_wrap(~e10s_state)
+plot_diff_addon(dt_good_prof[has_hangs == TRUE]) + facet_wrap(~e10s_state)
+
+## Boxplots of the difference in proportion of sessions with hangs.
+ggplot(dt_good_prof[has_hangs == TRUE], aes(addon_type, p_hangs_diff)) +
+    geom_boxplot() +
+    facet_wrap(~e10s_state) +
+    geom_hline(yintercept = 0, size = 0.5, colour = "blue") +
+#    scale_y_continuous(breaks = interval.breaks(4)) +
+    labs(title = "Change in % sessions with hangs (runner.js)\nfor clients with hangs (negative means improvement)",
+        x = "Client's add-ons type",
+        y = "Difference in % sessions with hangs")
 ```
+
+There is clear improvement in the mean hang time, for profiles that had any add-ons.
+The case for proportions of sessions with hangs is less conclusive.
+
+What are the sample sizes for these groups?
+
+```{r good-hang-diff-prof-overall-n}
+dt_good_prop_hangs <- dt_good_prof[, list(
+    has_hangs = mean(has_hangs),
+    n_has_hangs = sum(has_hangs)),
+    by = list(e10s_state, addon_type)]
+ggplot(dt_good_prop_hangs, aes(addon_type, n_has_hangs)) +
+    geom_bar(stat = "identity") +
+    facet_wrap(~e10s_state) +
+    labs(title = "Number of clients with hangs (runner.js)\neither before or after",
+        x = "Client's add-ons type",
+        y = "Num clients")
+```
+
+What proportions do these represent?
 
 ```{r good-hang-diff-prof-overall-pct}
 ## Also plot the corresponding proportions of clients with hangs.
-dt_good_prop_hangs <- dt_good_prof[, list(has_hangs = mean(has_hangs)),
-    by = list(e10s_state, addon_type)]
-plot_prop_addon <- function() {
-    ggplot(dt_good_prop_hangs, aes(addon_type, has_hangs)) +
+plot_prop_addon <- function(DT) {
+    ggplot(DT, aes(addon_type, has_hangs)) +
         geom_bar(stat = "identity") +
         scale_y_continuous(breaks = interval.breaks(0.2), labels = pct.labels,
             limits = c(0,1)) +
-        labs(title = "Percentage of clients with hangs (runner.js)",
+        labs(title = "Percentage of clients with hangs (runner.js)\neither before or after",
             x = "Client's add-ons type",
             y = "Percent of clients")
 }
-plot_prop_addon() + facet_wrap(~e10s_state)
+plot_prop_addon(dt_good_prop_hangs) + facet_wrap(~e10s_state)
 ```
 
-```{r good-hang-diff-prof-sys-box, fig.height = 16}
+```{r good-hang-diff-prof-sys-box, fig.height = 16, echo = FALSE, eval = FALSE}
 ## Same but split out by system config.
 dt_good_prof[, sys_os := factor(sys_os, levels = c("Windows_NT", "Darwin", "Linux"))][,
     sys_arch := factor(sys_arch, levels = c("x86", "x86-64"))]
@@ -257,17 +356,191 @@ sys_arch_levels <- dt_good_prof[, .N, by = list(sys_os, sys_arch)][order(sys_os,
     sys_arch_label(sys_os, sys_arch)]
 dt_good_prof[, sys_os_arch := factor(sys_arch_label(sys_os, sys_arch), levels = sys_arch_levels)]
 
-plot_diff_addon() + facet_grid(sys_os_arch ~ e10s_state) +
+plot_diff_addon(dt_good_prof[has_hangs == TRUE]) +
+    facet_grid(sys_os_arch ~ e10s_state) +
     ggtitle("(After - before) difference in client mean hang (runner.js) times\nfor clients with hangs\nby system config (negative means improvement)")
 ```
 
-```{r good-hang-diff-prof-sys-pct, fig.height = 14, eval = FALSE}
+```{r good-hang-diff-prof-sys-pct, fig.height = 14, echo = FALSE, eval = FALSE}
 dt_good_prop_hangs <- dt_good_prof[, list(has_hangs = mean(has_hangs)),
     by = list(e10s_state, addon_type, sys_os_arch)]
-plot_prop_addon() + facet_grid(sys_os_arch ~ e10s_state) +
+plot_prop_addon(dt_good_prop_hangs) + facet_grid(sys_os_arch ~ e10s_state) +
     ggtitle("Percentage of clients with hangs (runner.js)\nby system config")
 ```
 
+### Effect size estimation for hangs
+
+We now have evidence that the add-on SDK fix had a positive effect.
+We fit a linear model to compute effect sizes and test significance.
+
+Recall that sessions with no hangs are counted in the per-client-period mean as 1, done primarily for convenience.
+Although this doesn't fit naturally into the scale of the hang time measurements for actual hangs, we find that the additional variability this causes is nicely handled by using the change in proportion of sessions with hangs as a predictor.
+
+
+```{r good-hang-diff-mod}
+dt_good_prof[, has_hangs_both := has_hangs_before & has_hangs_after]
+dt_prof_hangs <- dt_good_prof[has_hangs == TRUE & !is.na(hang_time_diff)]
+#dt_prof_hangs <- dt_good_prof[has_hangs_both == TRUE & !is.na(hang_time_diff)]
+dt_prof_hangs[, has_addons := num_addons_nonsys > 0][,
+    has_affected_addons := num_addons_affected > 0][,
+    has_heavy_js_addons := num_addons_heavy_js > 0]
+## The change in the number of sessions observed before and after.
+dt_prof_hangs[, n_sess_diff := n_sess_after - n_sess_before]
+## Combine OS and version.
+dt_prof_hangs[, sys_os_with_ver := ifelse(sys_os == "Windows_NT", sprintf("Win %s", sys_os_version), sys_os)]
+```
+
+```{r good-hang-both, eval = FALSE, echo = FALSE}
+plot_diff_addon(dt_good_prof[has_hangs_both == TRUE]) +
+    facet_grid(~ e10s_state)
+```
+
+
+First try fitting a model with all relevant covariates.
+
+```{r good-hang-mod-1}
+fit <- lm(hang_time_diff ~
+    p_hangs_diff + has_hangs_both + n_sess_diff +
+    e10s + has_addons + has_affected_addons + has_vdh +
+    num_addons_nonsys + num_addons_affected +
+    sys_os_with_ver + sys_arch + sys_cpu_count + sys_mem,
+    data = dt_prof_hangs)
+summary(fit)
+anova(fit)
+```
+
+Note that e10s status doesn't affect the difference in hang times. Also, we see that OS and version is primarily picking up Windows XP.
+Use an indicator for this instead.
+
+Refit a slimmer model.
+
+```{r good-hang-mod-2}
+dt_prof_hangs[, on_win_xp := sys_os == "Windows_NT" & sys_os_version == "5.1"]
+fit <- lm(hang_time_diff ~ p_hangs_diff + has_hangs_both +
+    has_addons + has_affected_addons + has_vdh +
+    num_addons_nonsys + num_addons_affected +
+    on_win_xp + sys_cpu_count + sys_mem,
+    data = dt_prof_hangs)
+summary(fit)
+anova(fit)
+## Plot overall residuals.
+dt_prof_hangs[, resid := residuals(fit)][, fitted := fitted.values(fit)]
+qplot(resid, data = dt_prof_hangs, geom = "histogram", bins = 40, fill = I("white"), colour = I("black")) +
+    labs(title = "Histogram of residuals", x = "Residuals", y = "Count")
+dt_prof_hangs[, car::qqPlot(resid, main = "Normal QQ plot of residuals")]
+qplot(fitted, resid, data = dt_prof_hangs) +
+    geom_hline(yintercept = 0) +
+    labs(title = "Residuals vs. fitted values", x = "Fitted", y = "Residuals")
+
+## Split plots by add-on type.
+qplot(resid, data = dt_prof_hangs, geom = "histogram", bins = 40, fill = I("white"), colour = I("black")) +
+    labs(title = "Histogram of residuals by add-on type", x = "Residuals", y = "Count") +
+    facet_wrap(~ addon_type, scales = "free_y")
+qplot(fitted, resid, data = dt_prof_hangs) +
+    geom_hline(yintercept = 0) +
+    labs(title = "Residuals vs. fitted values by add-on type", x = "Fitted", y = "Residuals") +
+    facet_wrap(~ addon_type)
+```
+
+```{r low-resid, echo = FALSE, eval = FALSE}
+## Look at residuals for previous model, that didn't inclue p_hangs_diff.
+dt_prof_hangs[, resid := residuals(fit)][, fitted := fitted.values(fit)]
+## Have a bunch of low residuals.
+## Can this be explained because we see a large drop in the number of sessions with hangs before and after?
+qplot(p_hangs_diff, data = dt_prof_hangs[resid < -5],
+    geom = "histogram", bins = 40, fill = I("white"), colour = I("black"))
+qplot(p_hangs_diff, resid, data = dt_prof_hangs) + facet_wrap(~ addon_type)
+```
+
+```{r good-hang-mod-3, echo = FALSE, eval = FALSE}
+fit <- lm(hang_time_diff ~ has_addons + has_affected_addons + has_vdh +
+    num_addons_nonsys + sys_cpu_count + sys_mem + p_hangs_diff,
+    data = dt_prof_hangs)
+summary(fit)
+dt_prof_hangs[, resid := residuals(fit)][, fitted := fitted.values(fit)]
+qplot(resid, data = dt_prof_hangs, geom = "histogram", bins = 40, fill = I("white"), colour = I("black"))
+qqnorm(fit$resid)
+qqline(fit$resid)
+qplot(resid, data = dt_prof_hangs, geom = "histogram", bins = 40, fill = I("white"), colour = I("black")) +
+    facet_wrap(~ addon_type)
+qplot(fitted, resid, data = dt_prof_hangs) + facet_wrap(~ addon_type) +
+    geom_hline(yintercept = 0)
+```
+
+-------------------------
+
+## (In progress)
+
+### Startup times
+
+```{r sess-startup}
+## Only consider sessions where firstpaint came after XPI bootstrapping start.
+dt_startup <- dt_good[startup_XPIstart > 0 & startup_firstpaint > 0 &
+    startup_XPIstart < startup_firstpaint]
+dt_startup[, startup_affected := log(startup_firstpaint - startup_XPIstart + 1)]
+qplot(period, startup_affected,# data = dt_startup,
+    data = dt_startup[startup_affected < quantile(startup_affected, 0.99)],
+    geom = "boxplot") +
+    facet_grid(e10s ~ addon_state) +
+    labs(title = "Session startup times (XPI bootstrap start to firstpaint) - truncated",
+        x = "Period",
+        y = "log(firstpaint - XPI_bootstrap_start)")
+```
+
+```{r prof-startup}
+dt_startup_prof <- dt_startup[, c(list(
+    both_periods = length(unique(period)) == 2,
+    has_hangs = any(has_hangs),
+    startup_diff = median(startup_affected[period == "after"]) - median(startup_affected[period == "before"])),
+    setNames(lapply(per_client_cols, function(ccol) { get(ccol)[1] }), per_client_cols)),
+    by = client_id]
+dt_startup_prof <- dt_startup_prof[both_periods == TRUE]
+add_addon_type_col(dt_startup_prof)
+dt_startup_prof[, extreme := startup_diff > quantile(startup_diff, 0.99) |
+    startup_diff < quantile(startup_diff, 0.01)]
+dt_startup_prof[, has_addons := num_addons_nonsys > 0][,
+    has_affected_addons := num_addons_affected > 0][,
+    has_medium_js_addons := num_addons_medium_js > 0][,
+    has_heavy_js_addons := num_addons_heavy_js > 0]
+dt_startup_prof[, sys_os_with_ver := ifelse(sys_os == "Windows_NT", sprintf("Win %s", sys_os_version), sys_os)]
+
+qplot(addon_type, startup_diff, data = dt_startup_prof[extreme == FALSE],
+        geom = "boxplot") +
+    geom_hline(yintercept = 0, size = 0.5, colour = "blue") +
+    facet_wrap(~e10s_state) +
+    labs(title = "Change in median startup times (XPI bootstrap start to firstpaint) - truncated",
+        x = "Client's add-ons type",
+        y = "Difference in log(firstpaint - XPI_bootstrap_start)")
+
+
+fit <- lm(startup_diff ~
+    has_hangs +
+    #e10s +
+    has_addons +
+    #has_affected_addons +
+    #has_medium_js_addons +
+    #has_heavy_js_addons +
+    #has_vdh +
+    #num_addons_nonsys +
+    num_addons_affected +
+    #num_addons_medium_js +
+    #num_addons_heavy_js +
+    sys_os_with_ver
+    #sys_arch +
+    #sys_cpu_count +
+    #sys_mem,
+    ,data = dt_startup_prof)
+summary(fit)
+anova(fit)
+dt_startup_prof[, resid := residuals(fit)][, fitted := fitted.values(fit)]
+qplot(resid, data = dt_startup_prof, geom = "histogram", bins = 100, fill = I("white"), colour = I("black")) +
+    labs(title = "Histogram of residuals", x = "Residuals", y = "Count")
+dt_startup_prof[, car::qqPlot(resid, main = "Normal QQ plot of residuals")]
+qplot(fitted, resid, data = dt_startup_prof) +
+    geom_hline(yintercept = 0) +
+    labs(title = "Residuals vs. fitted values", x = "Fitted", y = "Residuals")
+
+```
 
 
 --------------
@@ -289,9 +562,7 @@ qplot(num_sessions, p, data = nsess_dist, geom = "point") + geom_line() +
             x = "N = # submissions",
             y = "% of clients with at most N submissions")
 ```
--->
 
-<!--
 How many sessions have weird startup times?
 
 ```{r startup-san, eval = FALSE}
