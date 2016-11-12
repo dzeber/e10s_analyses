@@ -1,5 +1,5 @@
 ---
-title: Impact of add-on SDK fix
+title: Impact of add-on SDK fix (Nightly 52)
 date: Updated `r format(Sys.Date(), "%B %d, %Y")`
 output:
     html_document:
@@ -467,7 +467,12 @@ qplot(fitted, resid, data = dt_prof_hangs) + facet_wrap(~ addon_type) +
     geom_hline(yintercept = 0)
 ```
 
--------------------------
+### Histograms
+
+According to the Telemetry dashboards, there was a clear drop in
+[`MEMORY_JS_COMPARTMENTS_SYSTEM`](https://telemetry.mozilla.org/new-pipeline/evo.html#!aggregates=median!5th-percentile!25th-percentile!75th-percentile!95th-percentile&cumulative=0&end_date=null&keys=&max_channel_version=nightly%252F52&measure=MEMORY_JS_COMPARTMENTS_SYSTEM&min_channel_version=nightly%252F52&product=Firefox&sanitize=1&sort_keys=submissions&start_date=null&trim=1&use_submission_date=0)
+before and after the fix. The median has dropped by about half, and so has the 95th percentile (which is an upper bound on the majority of sessions).
+
 
 ## (In progress)
 
