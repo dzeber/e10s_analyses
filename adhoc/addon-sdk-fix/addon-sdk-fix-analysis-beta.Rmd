@@ -1,0 +1,540 @@
+---
+title: Impact of add-on SDK fix (Beta 50)
+date: Updated `r format(Sys.Date(), "%B %d, %Y")`
+output:
+    html_document:
+        theme: flatly
+        toc: true
+        toc_float: true
+---
+
+```{r setup, include = FALSE}
+## Knitr options:
+## - wider figures
+knitr::opts_chunk$set(
+    fig.width = 9,
+    fig.height = 5,
+    cache = TRUE
+)
+
+options(stringsAsFactors = FALSE)
+library(feather)
+library(data.table)
+library(ggplot2)
+library(Hmisc)
+
+## ggplot theme: light.
+theme_set(theme_light())
+
+## Format large numbers as a string, using the comma to separate thousands.
+bigNum <- function(nums) {
+    prettyNum(nums, big.mark = ",")
+}
+
+## Convert proportions to a percentage formatted as a string.
+## Specify the number of decimal places to include.
+pctLabelText <- function(props, dec = 1) {
+    sprintf(sprintf("%%.%df%%%%", dec), props * 100)
+}
+
+## Convenience functions for ggplot2.
+#devtools::source_url("https://raw.githubusercontent.com/dzeber/work-tools/master/R/utils/ggplot.R")
+## Source locally.
+source("~/git/work-tools/R/utils/ggplot.R")
+
+```
+
+## Data munging
+
+First, load the [table of MPC add-ons](https://docs.google.com/spreadsheets/d/1npPziibb6-9QnJDbQdGc5We9LuPEabhrKoYJ9nl8ko4/edit?usp=sharing) and identify those most affected by the fix.
+
+```{r addons-table, eval = FALSE}
+addonsDT <- fread("addons-mpc.csv")
+## Change "None" to NA.
+for(col in names(addonsDT)) {
+    addonsDT[get(col) == "None", eval(col) := NA]
+}
+## Convert boolean columns to logical (loaded as character because of "None"s)
+## via numeric (since "TRUE/FALSE" strings were loaded as "1"/"0").
+bool_cols <- c("node_modules", "packages", "package_json")
+addonsDT[, eval(bool_cols) :=
+    lapply(bool_cols, function(col) { as.logical(as.numeric(get(col))) })]
+## Add-ons affected by the fix have package_json TRUE and large numbers of
+## JS files.
+affectedAddonsDT <- addonsDT[package_json == TRUE,
+    list(guid = id, users, js_files,
+        name = sub("^([^/]*/)+([^-]+)(.*)$", "\\2", download_url))]
+save(addonsDT, affectedAddonsDT, file = "addons-tables.RData")
+```
+
+Load the UT data collected in [this notebook](https://github.com/dzeber/e10s_analyses/blob/50-startup-analysis/adhoc/addon-sdk-fix/Add-on%20SDK%20fix%20analysis%20-%20Beta.ipynb).
+It is split across 4 data tables:
+
+- `main` with one row per session containing scalar measures
+- `addons` with one row per add-on per session
+- `hangs` with one row per hang time (histogram bin) per session
+- `hist` with one row per histogram bin per histogram per client per period (ie. for each client, session histograms are aggregated into single "before" and "after" histograms)
+
+The data consists of UT sessions from Beta 50 over two periods:
+
+- `before`: sessions on build 20161020152750
+- `after`: sessions on build 20161101104304
+
+The `after` builds have the updated add-on SDK code.
+
+The dataset contains all sessions on each of these builds among a 10% sample of Beta profiles who were active in both periods and maintained a constant e10s setting and collection of active add-ons (by GUID) across all sessions.
+
+
+```{r load-data, eval = FALSE}
+datadir <- "addon-sdk-fix-data_beta_2016-11-10"
+dt_main <- as.data.table(read_feather(file.path(datadir, "main.feather")))
+dt_addons <- as.data.table(read_feather(file.path(datadir, "addons.feather")))
+dt_hangs <- as.data.table(read_feather(file.path(datadir, "hangs.feather")))
+dt_hist <- as.data.table(read_feather(file.path(datadir, "hist.feather")))
+
+## Ignore versions for Mac and Linux.
+dt_main[sys_os != "Windows_NT", sys_os_version := NA]
+
+## Identify add-ons of interest.
+
+## Categorize add-ons according to the number of JS files:
+## 50+ (heavy), 20-50 (medium), all (affected).
+affectedAddonsDT[, heavy_js := js_files >= 50][,
+    medium_js := js_files >= 20 & js_files < 50][,
+    affected := TRUE]
+setkey(affectedAddonsDT, guid)
+setkey(dt_addons, guid)
+dt_addons_cols <- names(dt_addons)
+affected_addons_cols <- c("heavy_js", "medium_js", "affected")
+dt_addons <- affectedAddonsDT[dt_addons,
+    c(dt_addons_cols, affected_addons_cols), with = FALSE]
+for(acol in affected_addons_cols)
+    dt_addons[is.na(get(acol)), eval(acol) := FALSE]
+## Identify VDH 6.1.1 separately.
+dt_addons[, is_vdh := (guid == "{b9db16a4-6edc-47ec-a1f4-b86292ed211d}" &
+    substr(version, 1, 5) == "6.1.1")]
+
+## Summarize each session's add-ons according to whether they had affected
+## add-ons.
+session_addons <- dt_addons[, list(has_vdh = any(is_vdh),
+    num_addons_affected = sum(affected),
+    num_addons_medium_js = sum(medium_js),
+    num_addons_heavy_js = sum(heavy_js)),
+    keyby = session_id]
+setkey(dt_main, session_id)
+dt_main <- session_addons[dt_main]
+dt_main[is.na(has_vdh), has_vdh := FALSE]
+for(acol in grep("^num_addons", names(session_addons), value = TRUE))
+    dt_main[is.na(get(acol)), eval(acol) := 0]
+
+rm(dt_addons_cols)
+save(list = ls(pattern = "^dt_"), file = "addon-sdk-working-data-beta.RData")
+```
+
+```{r load-from-rdata, echo = FALSE}
+load("addons-tables.RData")
+load("addon-sdk-working-data-beta.RData")
+```
+
+What does this data look like?
+
+```{r data-head}
+head(dt_main)
+#head(dt_addons)
+#head(dt_hangs)
+#head(dt_hist)
+```
+
+### Longitudinal histories
+
+Ideally, we want to focus on profiles that were active both before and after the change, so that we can compare the paired before/after differences across profiles.
+To do this, we have only included profiles with a constant e10s setting and list of active non-system add-ons (ignoring add-on versions) across all their sessions.
+
+```{r good-prof}
+dt_good <- dt_main
+nprof_good <- dt_good[, length(unique(client_id))]
+```
+
+We have `r bigNum(nprof_good)` such profiles with a total of
+`r bigNum(nrow(dt_good))` sessions.
+
+How many sessions have e10s enabled, and have (non-system) add-ons?
+
+```{r good-prof-counts}
+dt_good[, list(n_sessions = .N), by = list(e10s, has_addons = num_addons_nonsys > 0)][
+    order(e10s, has_addons, decreasing = TRUE)][,
+    pct_sessions := pctLabelText(n_sessions / nrow(dt_good))][,
+    n_sessions := bigNum(n_sessions)][]
+```
+
+For those sessions that have add-ons, how many have add-ons most affected by the changes, and specifically VDH?
+
+```{r good-prof-counts-addons}
+dt_good[num_addons_nonsys > 0, list(n_sessions = .N),
+    by = list(has_addons_affected = num_addons_affected > 0, has_addons_medium_js = num_addons_medium_js > 0,
+        has_addons_heavy_js = num_addons_heavy_js > 0, has_vdh)][
+    order(has_addons_affected, has_addons_medium_js, has_addons_heavy_js, has_vdh)][,
+    pct_sessions := pctLabelText(n_sessions / nrow(dt_good))][,
+    n_sessions := bigNum(n_sessions)][]
+```
+
+The vast majority of sessions that have add-ons do not have add-ons specifically affected by the fix.
+
+### Note on hangs
+
+None of the sessions in the period __after the fix__ had recorded hangs. This is unlikely to be a real effect, since the [comparison for Nightly](https://metrics.mozilla.com/protected/dzeber/reports/addon-sdk-fix-analysis.html) showed that almost all profiles with hangs before also had hangs after, although at a reduced rate. It is more likely that this is a bug in the data collection.
+
+However, a significant proportion of sessions prior to the fix did have hangs. Thus, rather than comparing hang times, we analyse [changes in startup times](#startup-times) separately for profiles with and without hangs.
+
+Proportions of sessions and profiles with recorded hangs:
+```{r hang-props}
+phangs_sess <- dt_good[, list(pct_sessions_with_hangs = pctLabelText(mean(has_hangs))), by = period]
+phangs_prof <- dt_good[, list(has_hangs = any(has_hangs)), by = list(period, client_id)][,
+    list(pct_profiles_with_hangs = pctLabelText(mean(has_hangs))), by = period]
+merge(phangs_sess, phangs_prof, by = "period")[order(period, decreasing = TRUE)]
+```
+
+## Histograms
+
+According to the Telemetry dashboards, there was a drop in
+[`MEMORY_JS_COMPARTMENTS_SYSTEM`](https://telemetry.mozilla.org/new-pipeline/evo.html#!aggregates=median!5th-percentile!25th-percentile!75th-percentile!95th-percentile&cumulative=1&end_date=2016-10-23&keys=!__none__!__none__&max_channel_version=beta%252F50&measure=MEMORY_JS_COMPARTMENTS_SYSTEM&min_channel_version=beta%252F50&product=Firefox&sanitize=1&sort_keys=submissions&start_date=2016-09-23&trim=1&use_submission_date=0)
+before and after the fix, on the upper end of the distribution. The 95th percentile has dropped by about 30%. However, the median has stayed relatively constant. This is less of a difference that was observed on Nightly, likely due to the fact that more Nightly users have add-ons installed, and they tend to have more add-ons.
+
+
+## Startup times
+
+Look for effects on the portion of the startup process between XPI bootstrapping start and AMI end.
+
+```{r sess-startup, fig.height = 7}
+## Check that all startup times are non-missing and valid.
+startup_flds <- grep("^startup_", names(dt_good), value = TRUE)
+dt_good[, bad_startup := Reduce("|",
+    lapply(startup_flds, function(sf) { get(sf) <= 0 }))]
+## Make sure that AMI_end came after XPI_bootstrap_start.
+dt_good[, not_ordered := startup_AMIend <= startup_XPIstart]
+
+## How many sessions have startup issues?
+dt_good[, pctLabelText(mean(bad_startup | was_startup_interrupted | not_ordered))]
+
+## Restrict to non-problematic session starts.
+dt_startup <- dt_good[!bad_startup & !was_startup_interrupted & !not_ordered]
+dt_startup[, startup_affected := startup_AMIend - startup_XPIstart]
+
+## Reformat some of the columns for better display.
+dt_startup[, period := factor(period, levels = c("before", "after"))]
+dt_startup[, addon_type := factor(ifelse(num_addons_nonsys == 0, "no addons",
+    ifelse(num_addons_affected == 0, "addons,\nno affected", "has affected")),
+    levels = c("no addons", "addons,\nno affected", "has affected"))]
+dt_startup[, e10s_state := factor(ifelse(e10s, "e10s on", "e10s off"), levels = c("e10s on", "e10s off"))]
+
+## Boxplots of affected startup times by e10s status and add-on group.
+qplot(period, log10(startup_affected),
+    ## Drop extremes for this plot.
+    data = dt_startup[startup_affected < quantile(startup_affected, 0.99)],
+    geom = "boxplot") +
+    facet_grid(e10s_state ~ addon_type) +
+    labs(title = "Session startup times (XPI bootstrap start to AMI end) - truncated",
+        x = "Period",
+        y = "log10(AMI_end - XPI_bootstrap_start)")
+```
+
+Pooling all sessions, it is difficult to see whether the fix had any effect.
+
+Is there a relationship between the affected startup portion and other startup times?
+
+```{r sess-startup-scatter, fig.height = 14}
+other_startup <- list(quote(startup_main),
+    quote(startup_AMIstart - startup_main),
+    quote(startup_XPIstart - startup_AMIstart),
+    quote(startup_toplevelwindow - startup_AMIend),
+    quote(startup_firstpaint - startup_toplevelwindow),
+    quote(startup_sessionrestored - startup_firstpaint))
+samp_startup <- dt_startup[sample(200000)]
+startup_scatter <- lapply(other_startup, function(ss) {
+    samp_startup[eval(ss) > 0, qplot(log10(startup_affected), log10(eval(ss)),
+        geom = "point", size = I(0.1), alpha = I(0.2)) +
+        geom_density_2d()]
+})
+multiplot(plotlist = startup_scatter, cols = 2)
+```
+
+### Per-profile
+
+Consider contrasting per-profile summaries before and after the fix.
+For each profile we collected a week's worth of sessions before and after. How many sessions did profiles have during this period?
+
+```{r prof-startup-sess}
+## How many sessions does each client have?
+cdf_sess_prof <- dt_startup[, .N, by = list(client_id, period)][,
+    Ecdf(N, pl = FALSE), by = period][y > 0]
+qplot(x, y, data = cdf_sess_prof, geom = "line") + geom_point() +
+    xlim(0, 50) +
+    scale_y_continuous(breaks = interval.breaks(0.2), limits = c(0, 1),
+        labels = pct.labels) +
+    facet_wrap(~ period)
+```
+
+Summarize the portion of interest out of the startup process (time between XPI bootstrap start and AMI end) for each profile by the median across all sessions in each period, transformed using log (base 10).
+
+```{r prof-startup, fig.height = 9}
+## Many columns should have the same value across all sessions for a given client.
+## Just keep a single client-level value for these.
+per_client_cols <- c("e10s", "e10s_state", "num_addons_nonsys", "num_addons_affected",
+    "num_addons_medium_js", "num_addons_heavy_js", "has_vdh", "addon_type",
+    grep("^sys", names(dt_good), value = TRUE))
+## Summarize startup times using the client's median for each period.
+dt_startup_prof <- dt_startup[, c(list(
+    ## Some clients may have lost all sessions from a period when bad sessions
+    ## were dropped.
+    both_periods = length(unique(period)) == 2,
+    ## Has hangs before or after
+    ## Note: we saw hardly any hangs after
+    has_hangs = any(has_hangs),
+    startup_affected_before = median(startup_affected[period == "before"]),
+    startup_affected_after = median(startup_affected[period == "after"]),
+    ## Maintain other startup times as possible covariates
+    startup_pre_before = median(startup_XPIstart[period == "before"]),
+    startup_pre_after = median(startup_XPIstart[period == "after"]),
+    startup_post_before = median(startup_sessionrestored[period == "before"] -
+        startup_AMIstart[period == "before"]),
+    startup_post_after = median(startup_sessionrestored[period == "after"] -
+        startup_AMIstart[period == "after"]),
+    n_sess_before = sum(period == "before"),
+    n_sess_after = sum(period == "after")),
+    setNames(lapply(per_client_cols, function(ccol) { get(ccol)[1] }), per_client_cols)),
+    by = client_id]
+## Drop clients missing one period.
+dt_startup_prof <- dt_startup_prof[both_periods == TRUE]
+## Add some other summary covariates for modelling.
+dt_startup_prof[, has_addons := num_addons_nonsys > 0][,
+    has_affected_addons := num_addons_affected > 0][,
+    has_medium_js_addons := num_addons_medium_js > 0][,
+    has_heavy_js_addons := num_addons_heavy_js > 0]
+dt_startup_prof[, sys_os_with_ver := ifelse(sys_os == "Windows_NT", sprintf("Win %s", sys_os_version), sys_os)]
+dt_startup_prof[, on_win_xp := sys_os == "Windows_NT" & sys_os_version == "5.1"]
+## Add a column for the main response of interest.
+dt_startup_prof[, logdiff := log10(startup_affected_after) - log10(startup_affected_before)]
+dt_startup_prof[, extreme := logdiff > quantile(logdiff, 0.99) |
+    logdiff < quantile(logdiff, 0.01)]
+## Minimum number of sessions in either period.
+dt_startup_prof[, n_sess_min := pmin(n_sess_before, n_sess_after)]
+dt_startup_prof[, hangs_state := factor(
+    ifelse(has_hangs, "has hangs", "no hangs"),
+    levels = c("has hangs", "no hangs"))]
+
+dt_startup_prof[, logdiff_pre := log10(startup_pre_after) - log10(startup_pre_before)][,
+    logdiff_post := log10(startup_post_after) - log10(startup_post_before)]
+
+## Plot difference in log median startup between periods.
+ggplot(dt_startup_prof[extreme == FALSE], aes(addon_type, logdiff)) +
+    geom_boxplot() +
+    facet_grid(hangs_state ~ e10s_state) +
+    geom_hline(yintercept = 0, size = 0.5, colour = "blue") +
+ #   ylim(-4, 4) +
+    labs(title = "Change in per-profile median startup times (XPI bootstrap start to AMI end)\nbefore and after the change",
+        x = "Client's add-ons type",
+        y = "Difference in median log10(AMI_end - XPI_bootstrap_start)")
+```
+
+There appears to be a weak effect, particularly for profiles that had hangs, although the distributions are very spread out. This is partly due to the influence of profiles with few observed sessions before and after the fix.
+Surprisingly, it appears that profiles with no add-ons saw the greatest improvement among those with hangs.
+
+Try fitting a model to the (log10) differences. We fit separate models according to whether or not profiles had hangs.
+We fit two models for each case: one containing all collected covariates, and one refined to most relevant covariates.
+
+First for profiles with hangs:
+
+```{r prof-startup-fit-hangs}
+fit <- lm(logdiff ~
+    e10s +
+    has_addons +
+    has_affected_addons +
+    has_heavy_js_addons +
+    has_vdh +
+    num_addons_nonsys +
+    num_addons_affected +
+    num_addons_heavy_js +
+    logdiff_pre +
+    logdiff_post +
+    sys_os_with_ver +
+    sys_arch +
+    sys_cpu_count +
+    sys_mem
+    ,data = dt_startup_prof[has_hangs == TRUE]
+    , weights = n_sess_min
+)
+summary(fit)
+anova(fit)
+sresid <- MASS::studres(fit)
+qplot(fitted.values(fit), sresid,
+    geom = "point", size = I(0.1), alpha = I(0.5)) +
+    geom_density_2d() +
+    geom_hline(yintercept = 0) +
+    labs(title = "Studentized residuals vs. fitted values (with hangs)",
+        x = "Fitted", y = "Studentized residuals")
+qplot(sample = sresid, geom = "qq", alpha = I(0.5)) +
+    geom_abline(slope = 1) +
+    labs(title = "Normal QQ plot of studentized residuals (with hangs)",
+        x = "Normal quantiles", y = "Sample quantiles")
+```
+<!--
+```{r mixed}
+#library(lme4)
+#setkey(dt_startup, client_id)
+#setkey(dt_startup_prof, client_id)
+#dt_startup_prof_sess <- dt_startup[dt_startup_prof]
+#dt_startup_prof_sess[, log_affected := log10(startup_AMIend - startup_XPIstart)][,
+#    log_pre := log10(startup_XPIstart)][,
+#    log_post := log10(startup_sessionrestored - startup_AMIend)]
+#mfit <- lmer(log_affected ~
+#    period +
+#    has_hangs +
+#    e10s +
+#    has_addons +
+#    has_affected_addons +
+#    has_medium_js_addons +
+#    has_heavy_js_addons +
+#    has_vdh +
+#    num_addons_nonsys +
+#    num_addons_affected +
+#    num_addons_medium_js +
+#    num_addons_heavy_js +
+#    log_pre +
+#    log_post +
+#    sys_os_with_ver +
+#    sys_arch +
+#    sys_cpu_count +
+#    sys_mem +
+#    (1 | client_id)
+#    ,data = dt_startup_prof_sess
+##    , weights = n_sess_min
+#)
+#
+```
+-->
+
+And for profiles without hangs:
+
+```{r prof-startup-fit-nohangs}
+fit <- lm(logdiff ~
+    e10s +
+    has_addons +
+    has_affected_addons +
+    has_heavy_js_addons +
+    has_vdh +
+    num_addons_nonsys +
+    num_addons_affected +
+    num_addons_heavy_js +
+    logdiff_pre +
+    logdiff_post +
+    sys_os_with_ver +
+    sys_arch +
+    sys_cpu_count +
+    sys_mem
+    ,data = dt_startup_prof[has_hangs == FALSE]
+    , weights = n_sess_min
+)
+summary(fit)
+anova(fit)
+sresid <- MASS::studres(fit)
+qplot(fitted.values(fit), sresid,
+    geom = "point", size = I(0.1), alpha = I(0.5)) +
+    geom_density_2d() +
+    geom_hline(yintercept = 0) +
+    labs(title = "Studentized residuals vs. fitted values (no hangs)",
+        x = "Fitted", y = "Studentized residuals")
+qplot(sample = sresid, geom = "qq", alpha = I(0.5)) +
+    geom_abline(slope = 1) +
+    labs(title = "Normal QQ plot of studentized residuals (no hangs)",
+        x = "Normal quantiles", y = "Sample quantiles")
+```
+
+### Final models
+
+After refinements, we obtain final models for profiles with and without hangs.
+We output a table listing the effects of interest, converted back to the original scale, together with bootstrap CIs.
+
+Note that, because the model was fit on the log scale, the effects are multiplicative.
+
+```{r prof-startup-fit-hangs-2}
+fit <- lm(logdiff ~
+    e10s +
+    has_addons +
+    has_affected_addons +
+    num_addons_nonsys +
+    num_addons_affected +
+    logdiff_pre +
+    logdiff_post +
+    sys_os_with_ver +
+    sys_arch +
+    sys_cpu_count +
+    sys_mem
+    ,data = dt_startup_prof[has_hangs == TRUE]
+    , weights = n_sess_min
+)
+summary(fit)
+anova(fit)
+
+bootstrap_ci_est <- function(fit, DT) {
+    fitcall <- fit$call
+    fitcall$data <- quote(bdata)
+    ## Bootstrap the model fit to get CIs for effects estimates.
+    bfits <- lapply(1:1000, function(i) {
+        bdata <- DT[sample(.N, replace = TRUE)]
+        eval(fitcall)$coefficients
+    })
+    bfits <- rbindlist(lapply(bfits, as.list))[, bootstrap := TRUE]
+    bfits <- rbind(bfits, c(as.list(coefficients(fit)), list(bootstrap = FALSE)))
+    ## Compute effects of interest.
+    bfits[, effect_no_addons := `(Intercept)`][,
+        effect_no_addons_e10s := effect_no_addons + e10sTRUE][,
+        effect_with_addons :=  effect_no_addons + has_addonsTRUE][,
+        effect_with_affected_addons := effect_with_addons + has_affected_addonsTRUE][,
+        effect_with_addons_e10s := effect_with_addons + e10sTRUE][,
+        effect_with_affected_addons_e10s := effect_with_affected_addons + e10sTRUE]
+    effectcols <- grep("effect_", names(bfits), value = TRUE)
+    ## Estimate CIs.
+    bci <- rbindlist(lapply(effectcols, function(ecol) {
+        effq <- as.list(bfits[bootstrap == TRUE,
+            10^quantile(get(ecol), c(0.025, 0.975))])
+        c(list(effect = sub("effect_", "", ecol, fixed = TRUE)), effq)
+    }))
+    ## Join in original effect estimates.
+    bci[, estimate := 10^as.numeric(bfits[bootstrap == FALSE, effectcols, with = FALSE])]
+    setcolorder(bci, c(1, 4, 2, 3))
+    bci[]
+}
+
+eff_withhangs <- bootstrap_ci_est(fit, dt_startup_prof[has_hangs == TRUE])
+eff_withhangs
+```
+
+This table lists the estimated mean of the per-profile ratio `median(startup after)/median(startup before)`, controlling for hardware, as well as changes in other parts of the startup process (which may have been impacted by other changes landing in the newer Beta builds). These estimates also control for the number of add-ons currently active in the profile.
+
+On average, the time spent at startup between XPI bootstrapping start and AMI end decreased by around 20% for profiles with add-ons. For profiles with no add-ons, the decrease is estimated around 50%. The results do not show much practical difference according to whether e10s was enabled and whether the profile had add-ons considered to be affected by the fix.
+
+For profiles without hangs:
+
+```{r prof-startup-fit-nohangs-2}
+fit <- lm(logdiff ~
+    e10s +
+    has_addons +
+    has_affected_addons +
+    logdiff_pre +
+    logdiff_post +
+    sys_os_with_ver +
+    sys_arch +
+    sys_cpu_count +
+    sys_mem
+    ,data = dt_startup_prof[has_hangs == FALSE]
+    , weights = n_sess_min
+)
+summary(fit)
+anova(fit)
+
+eff_nohangs <- bootstrap_ci_est(fit, dt_startup_prof[has_hangs == FALSE])
+eff_nohangs
+```
+
+For profiles that had no hangs in any of their sessions before the fix, there was no significant change in startup between XPI bootstrapping start and AMI end, controlling for changes in other parts of the startup process.
+

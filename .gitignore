@@ -12,3 +12,7 @@
 
 # R stuff
 .Rhistory
+
+# Caches for Rmd rendering
+*_cache/
+*_files/
