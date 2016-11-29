@@ -1,0 +1,309 @@
+queries:
+- api_key: d7ab04c3ac3b45dca96feb29c487671e0943f94d
+  data_source: Presto
+  description: null
+  id: 1821
+  name: E10s stability comparison by activity date (Release 49/50/51)
+  query: |-
+    WITH channel_data AS (
+      /* Restrict to population and dates of interest */
+      SELECT *
+      FROM crash_aggregates
+      WHERE
+      -- Dates start from the release of Release 49
+      submission_date >= '2016-09-20'
+      AND activity_date >= '2016-09-20'
+      -- Fx Release 49-51
+      AND dimensions['application'] = 'Firefox'
+      AND dimensions['channel'] = 'release'
+      AND substr(dimensions['build_version'], 1, 2) in ('49', '50', '51')
+      -- No active experiment
+      AND dimensions['experiment_id'] IS NULL
+      -- Test groups with and without add-ons
+      AND dimensions['e10s_cohort'] IN ('addons-set49a-test', 'test', 'addons-set50allmpc-test')
+    ),
+    crash_counts AS (
+      /* Total crashes and usage time by date and cohort */
+      SELECT
+      activity_date,
+      -- group addons cohorts together
+      CASE
+        WHEN dimensions['e10s_cohort'] like 'addons-%' THEN 'addons-test'
+        ELSE dimensions['e10s_cohort']
+      END AS e10s_cohort,
+      -- Usage hours (in 1000s)
+      SUM(stats['usage_hours']) / 1000 AS usage_khours,
+      -- Total crashes for each type
+      SUM(stats['main_crashes']) AS main_crashes,
+      SUM(stats['content_crashes']) AS content_crashes,
+      SUM(stats['content_shutdown_crashes']) AS content_shutdown_crashes,
+      SUM(stats['plugin_crashes']) AS npapi_plugin_crashes,
+      SUM(stats['gmplugin_crashes']) AS media_plugin_crashes
+      FROM channel_data
+      GROUP BY 1, 2
+    ),
+    counts_over_time AS (
+      /* Base crash count dataset, excluding uninformative rows */
+      SELECT *
+      FROM crash_counts
+      WHERE usage_khours > 1
+    )
+    /* Compute crash rates for each crash type as well as combined */
+    SELECT
+    activity_date,
+    e10s_cohort,
+    main_crashes / usage_khours AS main_crash_rate,
+    (content_crashes - content_shutdown_crashes) / usage_khours AS content_crash_rate_noshutdown,
+    content_shutdown_crashes / usage_khours AS content_shutdown_crash_rate,
+    npapi_plugin_crashes / usage_khours AS npapi_plugin_crash_rate,
+    media_plugin_crashes / usage_khours AS media_plugin_crash_rate,
+    (main_crashes + content_crashes - content_shutdown_crashes) / usage_khours AS combined_app_crash_rate,
+    (npapi_plugin_crashes + media_plugin_crashes) / usage_khours AS combined_plugin_crash_rate
+    FROM counts_over_time
+    -- Drop the most recent day as data may be incomplete
+    WHERE CAST(activity_date AS date) < current_date - interval '2' day
+    ORDER BY activity_date, e10s_cohort ASC
+  schedule: '86400'
+  visualizations:
+  - description: ''
+    id: 3234
+    name: Main crash rate
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, combined_app_crash_rate: unused, combined_plugin_crash_rate: unused,
+        e10s_cohort: series, main_crash_rate: y}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        addons-test: {index: 0, name: E10s with add-ons, type: line, yAxis: 0, zIndex: 1}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 3233
+    name: Combined plugin crash rate
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, combined_app_crash_rate: unused, combined_plugin_crash_rate: y,
+        e10s_cohort: series}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        addons-test: {index: 0, name: E10s with add-ons, type: line, yAxis: 0, zIndex: 1}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 3232
+    name: Combined app crash rate (main/content)
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, combined_app_crash_rate: y, e10s_cohort: series}
+      globalSeriesType: line
+      legend: {enabled: true}
+      series: {stacking: null}
+      seriesOptions:
+        addons-test: {index: 0, name: E10s with add-ons, type: line, yAxis: 0, zIndex: 1}
+        test: {index: 0, name: E10s (no add-ons), type: line, yAxis: 0, zIndex: 0}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Crashes per khour}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+- api_key: b220c5f84fc5ded3db37568010d0358af23cadf1
+  data_source: Presto
+  description: null
+  id: 1818
+  name: Daily proportion of Release 49/50/51 usage in e10s cohorts
+  query: |-
+    WITH channel_data AS (
+      /* Restrict to population and dates of interest */
+      SELECT *
+      FROM crash_aggregates
+      WHERE
+      -- Dates start from the release of Beta 49
+      submission_date >= '2016-09-20'
+      AND activity_date >= '2016-09-20'
+      -- Fx Release 49-51
+      AND dimensions['application'] = 'Firefox'
+      AND dimensions['channel'] = 'release'
+      AND substr(dimensions['build_version'], 1, 2) in ('49', '50', '51')
+      -- No active experiment
+      AND dimensions['experiment_id'] IS NULL
+    ),
+    usage_by_cohort_and_date AS (
+      /* Total usage hours by activity date and cohort */
+      SELECT
+      activity_date,
+      dimensions['e10s_cohort'] AS e10s_cohort,
+      substr(dimensions['build_version'], 1, 2) AS version,
+      SUM(stats['usage_hours']) AS usage_hours
+      FROM channel_data
+      GROUP BY 1, 2, 3
+    ),
+    usage_by_date AS (
+      /* Total usage hours by date only */
+      SELECT
+      activity_date,
+      SUM(usage_hours) AS total_usage_hours
+      FROM usage_by_cohort_and_date
+      GROUP BY 1
+    ),
+    usage_by_cohort_with_totals AS (
+      SELECT
+      ubcad.*,
+      total_usage_hours
+      FROM usage_by_cohort_and_date AS ubcad
+      JOIN usage_by_date AS ubd
+        ON ubcad.activity_date = ubd.activity_date
+    ),
+    /* Proportion of usage by cohort and date */
+    usage_props AS (
+      SELECT
+      activity_date,
+      e10s_cohort,
+      version,
+      usage_hours,
+      usage_hours / total_usage_hours as usage_prop
+      FROM usage_by_cohort_with_totals
+    )
+    /* Total usage hours and proportions for cohorts with and without add-ons.
+     * Note that there is no control group in Release.
+     */
+    SELECT
+    activity_date,
+    version,
+    SUM(CASE WHEN e10s_cohort IN ('addons-set49a-test', 'addons-set50allmpc-test') THEN usage_hours ELSE 0 END)
+      AS usage_hours_addons,
+    SUM(CASE WHEN e10s_cohort IN ('addons-set49a-test', 'addons-set50allmpc-test') THEN usage_prop ELSE 0 END) * 100
+      AS usage_pct_addons,
+    SUM(CASE WHEN e10s_cohort = 'test' THEN usage_hours ELSE 0 END)
+      AS usage_hours_std,
+    SUM(CASE WHEN e10s_cohort = 'test' THEN usage_prop ELSE 0 END) * 100
+      AS usage_pct_std
+    FROM usage_props
+    WHERE
+    -- Drop the most recent days as data may be incomplete
+    CAST(activity_date AS date) < current_date - interval '2' day
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  schedule: '86400'
+  visualizations:
+  - description: ''
+    id: 3230
+    name: Daily percentage of e10s cohort usage from the standard test cohort
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, usage_hours_addons: unused, usage_hours_std: unused,
+        usage_pct_addons: unused, usage_pct_std: y, version: series}
+      globalSeriesType: area
+      legend: {enabled: true}
+      series: {stacking: normal}
+      seriesOptions:
+        '49': {index: 0, type: area, yAxis: 0, zIndex: 0}
+        '50': {index: 0, type: area, yAxis: 0, zIndex: 1}
+        '51': {index: 0, type: area, yAxis: 0, zIndex: 2}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Percentage of usage hours}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 3229
+    name: Daily usage hours for profiles in the e10s standard test cohort
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, usage_hours_addons: unused, usage_hours_std: y,
+        usage_pct_addons: unused, version: series}
+      globalSeriesType: area
+      legend: {enabled: true}
+      series: {stacking: normal}
+      seriesOptions:
+        '49': {index: 0, type: area, yAxis: 0, zIndex: 0}
+        '50': {index: 0, type: area, yAxis: 0, zIndex: 1}
+        '51': {index: 0, type: area, yAxis: 0, zIndex: 2}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Usage hours}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 3228
+    name: Daily usage hours for profiles in the e10s add-ons test cohort
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, usage_hours_addons: y, usage_pct_addons: unused,
+        version: series}
+      globalSeriesType: area
+      legend: {enabled: true}
+      series: {stacking: normal}
+      seriesOptions:
+        '49': {index: 0, type: area, yAxis: 0, zIndex: 0}
+        '50': {index: 0, type: area, yAxis: 0, zIndex: 1}
+        '51': {index: 0, type: area, yAxis: 0, zIndex: 2}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Usage hours}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
+  - description: ''
+    id: 3227
+    name: Daily percentage of e10s cohort usage from add-ons test cohort
+    options:
+      bottomMargin: 50
+      columnMapping: {activity_date: x, usage_pct_addons: y, version: series}
+      globalSeriesType: area
+      legend: {enabled: true}
+      series: {stacking: normal}
+      seriesOptions:
+        '49': {index: 0, type: area, yAxis: 0, zIndex: 0}
+        '50': {index: 0, type: area, yAxis: 0, zIndex: 1}
+        '51': {index: 0, type: area, yAxis: 0, zIndex: 2}
+      sortX: true
+      xAxis:
+        labels: {enabled: true}
+        title: {text: Activity date}
+        type: datetime
+      yAxis:
+      - title: {text: Percentage of usage hours}
+        type: linear
+      - {opposite: true, type: linear}
+    type: CHART
